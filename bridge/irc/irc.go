@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io/ioutil"
+	"math"
 	"net"
 	"sort"
 	"strconv"
@@ -169,6 +170,14 @@ func (b *Birc) Send(msg config.Message) (string, error) {
 	var msgLines []string
 	if b.GetBool("StripMarkdown") {
 		msg.Text = stripmd.Strip(msg.Text)
+	}
+
+	if prefixFormat := b.GetString("ReplyPrefix"); len(msg.Extra["ParentMessage"]) > 0 && prefixFormat != "" {
+		parentMsg := msg.Extra["ParentMessage"][0].(config.Message)
+		prefix := strings.ReplaceAll(prefixFormat, "{USER}", parentMsg.Username)
+		prefix = strings.ReplaceAll(prefix, "{TIME}", parentMsg.Timestamp.String())
+		prefix = strings.ReplaceAll(prefix, "{MESSAGE}", parentMsg.Text[0:int(math.Min(float64(len(parentMsg.Text)), 10))])
+		msg.Text = prefix + msg.Text
 	}
 
 	if b.GetBool("MessageSplit") {

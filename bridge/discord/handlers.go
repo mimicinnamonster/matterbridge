@@ -154,8 +154,23 @@ func (b *Bdiscord) messageCreate(s *discordgo.Session, m *discordgo.MessageCreat
 	rmsg.Text = replaceEmotes(rmsg.Text)
 
 	// Add our parent id if it exists, and if it's not referring to a message in another channel
-	if ref := m.MessageReference; ref != nil && ref.ChannelID == m.ChannelID {
+	ref := m.MessageReference
+	if ref != nil && ref.ChannelID == m.ChannelID {
 		rmsg.ParentID = ref.MessageID
+	}
+
+	if ref != nil {
+		if parentMessage, err := s.ChannelMessage(ref.ChannelID, ref.MessageID); err == nil {
+			rmsg.Extra = map[string][]interface{}{
+				"ParentMessage": {
+					config.Message{
+						Username:  parentMessage.Author.Username,
+						Text:      parentMessage.Content,
+						Timestamp: parentMessage.Timestamp,
+					},
+				},
+			}
+		}
 	}
 
 	b.Log.Debugf("<= Sending message from %s on %s to gateway", m.Author.Username, b.Account)
