@@ -138,6 +138,12 @@ func (b *Birc) JoinChannel(channel config.ChannelInfo) error {
 	return nil
 }
 
+func (b *Birc) PartChannel(channel config.ChannelInfo) error {
+	b.i.Cmd.Part(channel.Name)
+	delete(b.channels, channel.Name)
+	return nil
+}
+
 func (b *Birc) Send(msg config.Message) (string, error) {
 	// ignore delete messages
 	if msg.Event == config.EventMsgDelete {

@@ -297,6 +297,9 @@ func (b *Bdiscord) channelDelete(s *discordgo.Session, m *discordgo.ChannelDelet
 		return
 	}
 
+	// Get channel name before removing it from our list
+	channelName := b.getChannelName(m.ID)
+
 	b.channelsMutex.Lock()
 	for i, channel := range b.channels {
 		if channel.ID == m.ID {
@@ -309,7 +312,7 @@ func (b *Bdiscord) channelDelete(s *discordgo.Session, m *discordgo.ChannelDelet
 	rmsg := config.Message{
 		Account: b.Account,
 		Event:   config.EventChannelDelete,
-		Channel: b.getChannelName(m.ID),
+		Channel: channelName,
 		Text:    m.Name,
 	}
 	b.Log.Debugf("<= Sending ChannelDelete from %s to gateway: %#v", b.Account, rmsg)

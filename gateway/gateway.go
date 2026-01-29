@@ -252,8 +252,31 @@ func (gw *Gateway) getDestChannel(msg *config.Message, dest bridge.Bridge) []con
 			continue
 		}
 		if strings.Contains(channel.Direction, "out") && channel.Account == dest.Account && gw.validGatewayDest(msg) {
+			// if source is wildcard, only route to mapped dest channel
+			var srcWildcard bool
+			for _, c := range gw.Channels {
+				if c.Account == msg.Account && c.Name == "*" {
+					srcWildcard = true
+					break
+				}
+			}
+
+			if srcWildcard {
+				mappedName := gw.Router.mapChannelName(msg.Account, dest.Account, msg.Channel)
+				if channel.Name == mappedName {
+					gw.logger.Debugf("getDestChannel: match found for wildcard source %s: %s == %s", msg.Account, channel.Name, mappedName)
+					channels = append(channels, *channel)
+				} else {
+					gw.logger.Debugf("getDestChannel: no match for wildcard source %s: %s != %s", msg.Account, channel.Name, mappedName)
+				}
+				continue
+			}
+
 			channels = append(channels, *channel)
 		}
+	}
+	if len(channels) == 0 {
+		gw.logger.Debugf("getDestChannel: no channels found for %s (%s) to %s", msg.Account, msg.Channel, dest.Account)
 	}
 	return channels
 }

@@ -7,6 +7,9 @@ import (
 )
 
 func (r *Router) handleChannelCreate(msg *config.Message) {
+	if msg.Event != config.EventChannelCreate {
+		return
+	}
 	r.logger.Debugf("handleChannelCreate: %#v", msg)
 
 	for _, gw := range r.Gateways {
@@ -92,9 +95,56 @@ func (r *Router) handleChannelCreate(msg *config.Message) {
 }
 
 func (r *Router) handleChannelDelete(msg *config.Message) {
+	if msg.Event != config.EventChannelDelete {
+		return
+	}
 	r.logger.Debugf("handleChannelDelete: %#v", msg)
-	// TODO: implement dynamic channel removal if needed
-	// For now, we mainly care about creation.
+
+	for _, gw := range r.Gateways {
+		// find gateways with channel="*" for the source account
+		var srcWildcard bool
+		for _, channel := range gw.Channels {
+			if channel.Account == msg.Account && channel.Name == "*" {
+				srcWildcard = true
+				break
+			}
+		}
+
+		if !srcWildcard {
+			continue
+		}
+
+		r.logger.Debugf("found wildcard gateway %s for source account %s", gw.Name, msg.Account)
+
+		// find target bridges and part from them
+		for account, br := range gw.Bridges {
+			if account == msg.Account {
+				continue
+			}
+
+			destChannelName := r.mapChannelName(msg.Account, account, msg.Channel)
+			destID := destChannelName + account
+
+			if channel, ok := gw.Channels[destID]; ok {
+				r.logger.Infof("dynamic bridging: parting %s (%s) on gateway %s", account, destChannelName, gw.Name)
+				err := br.PartChannel(*channel)
+				if err != nil {
+					r.logger.Errorf("failed to part dynamic channel %s on %s: %v", destChannelName, account, err)
+				}
+				delete(gw.Channels, destID)
+				delete(br.Channels, destID)
+			}
+		}
+
+		// remove source channel from gateway/bridge as well
+		srcID := msg.Channel + msg.Account
+		if _, ok := gw.Channels[srcID]; ok {
+			delete(gw.Channels, srcID)
+			if srcBr, ok := gw.Bridges[msg.Account]; ok {
+				delete(srcBr.Channels, srcID)
+			}
+		}
+	}
 }
 
 func (r *Router) mapChannelName(srcAccount, destAccount, channelName string) string {
@@ -140,5 +190,5 @@ func bIRCToDiscord(name string) string {
 	if prefixCount == 0 {
 		return name
 	}
-	return strings.Repeat("_", prefixCount-1) + name[prefixCount:]
+	return strings.Repeat("_", prefixCount) + name[prefixCount:]
 }

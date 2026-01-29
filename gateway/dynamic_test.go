@@ -17,9 +17,9 @@ func TestMapChannelName(t *testing.T) {
 		{"discord.test", "irc.test", "channel", "channel"},
 		{"discord.test", "irc.test", "_channel", "#channel"},
 		{"discord.test", "irc.test", "__channel", "##channel"},
-		{"irc.test", "discord.test", "#channel", "channel"},
-		{"irc.test", "discord.test", "##channel", "_channel"},
-		{"irc.test", "discord.test", "###channel", "__channel"},
+		{"irc.test", "discord.test", "#channel", "_channel"},
+		{"irc.test", "discord.test", "##channel", "__channel"},
+		{"irc.test", "discord.test", "###channel", "___channel"},
 		{"slack.test", "discord.test", "general", "general"},
 	}
 
@@ -39,7 +39,7 @@ func TestBDiscordToIRC(t *testing.T) {
 
 func TestBIRCToDiscord(t *testing.T) {
 	assert.Equal(t, "channel", bIRCToDiscord("channel"))
-	assert.Equal(t, "channel", bIRCToDiscord("#channel"))
-	assert.Equal(t, "_channel", bIRCToDiscord("##channel"))
-	assert.Equal(t, "__channel", bIRCToDiscord("###channel"))
+	assert.Equal(t, "_channel", bIRCToDiscord("#channel"))
+	assert.Equal(t, "__channel", bIRCToDiscord("##channel"))
+	assert.Equal(t, "___channel", bIRCToDiscord("###channel"))
 }

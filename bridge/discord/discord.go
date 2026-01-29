@@ -250,6 +250,10 @@ func (b *Bdiscord) JoinChannel(channel config.ChannelInfo) error {
 	return nil
 }
 
+func (b *Bdiscord) PartChannel(channel config.ChannelInfo) error {
+	return nil
+}
+
 func (b *Bdiscord) Send(msg config.Message) (string, error) {
 	b.Log.Debugf("=> Receiving %#v", msg)
 
