@@ -320,7 +320,7 @@ func (b *Birc) getClient() (*girc.Client, error) {
 	}
 
 	supportedCaps := map[string][]string{"overdrivenetworks.com/relaymsg": nil, "draft/relaymsg": nil}
-	if b.GetBool("IgnoreUnregistered") {
+	if len(b.GetStringSlice("IgnoreUnregistered")) > 0 {
 		supportedCaps["account-tag"] = nil
 	}
 
@@ -391,9 +391,24 @@ func (b *Birc) skipPrivMsg(event girc.Event) bool {
 		return true
 	}
 
-	if b.GetBool("IgnoreUnregistered") {
+	// check if we have any parameters
+	if len(event.Params) == 0 {
+		return true
+	}
+
+	ignoreChannels := b.GetStringSlice("IgnoreUnregistered")
+	shouldIgnore := false
+	for _, c := range ignoreChannels {
+		if strings.EqualFold(c, event.Params[0]) {
+			shouldIgnore = true
+			break
+		}
+	}
+
+	if shouldIgnore {
 		_, ok := event.Tags.Get("account")
 		if !ok {
+			b.Log.Debugf("Ignoring message from %s in %s (unregistered). Server has account-tag: %t", event.Source.Name, event.Params[0], b.i.HasCapability("account-tag"))
 			return true
 		}
 	}
