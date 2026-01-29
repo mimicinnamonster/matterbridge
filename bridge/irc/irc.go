@@ -319,6 +319,11 @@ func (b *Birc) getClient() (*girc.Client, error) {
 		return nil, err
 	}
 
+	supportedCaps := map[string][]string{"overdrivenetworks.com/relaymsg": nil, "draft/relaymsg": nil}
+	if b.GetBool("IgnoreUnregistered") {
+		supportedCaps["account-tag"] = nil
+	}
+
 	i := girc.New(girc.Config{
 		Server:     server,
 		ServerPass: b.GetString("Password"),
@@ -333,7 +338,7 @@ func (b *Birc) getClient() (*girc.Client, error) {
 		// skip gIRC internal rate limiting, since we have our own throttling
 		AllowFlood:    true,
 		Debug:         debug,
-		SupportedCaps: map[string][]string{"overdrivenetworks.com/relaymsg": nil, "draft/relaymsg": nil},
+		SupportedCaps: supportedCaps,
 	})
 	return i, nil
 }
@@ -385,6 +390,14 @@ func (b *Birc) skipPrivMsg(event girc.Event) bool {
 	if relayedNick, ok := event.Tags.Get("relaymsg"); ok && relayedNick == b.Nick {
 		return true
 	}
+
+	if b.GetBool("IgnoreUnregistered") {
+		_, ok := event.Tags.Get("account")
+		if !ok {
+			return true
+		}
+	}
+
 	return false
 }
 

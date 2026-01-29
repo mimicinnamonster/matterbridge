@@ -103,6 +103,7 @@ type Protocol struct {
 	IconURL                string   // mattermost, slack
 	IgnoreFailureOnStart   bool     // general
 	IgnoreNicks            string   // all protocols
+	IgnoreUnregistered     bool     // irc
 	IgnoreMessages         string   // all protocols
 	Jid                    string   // xmpp
 	JoinDelay              string   // all protocols
