@@ -133,6 +133,8 @@ func (r *Router) handleReceive() {
 		r.handleEventGetChannelMembers(&msg)
 		r.handleEventFailure(&msg)
 		r.handleEventRejoinChannels(&msg)
+		r.handleChannelCreate(&msg)
+		r.handleChannelDelete(&msg)
 
 		// Set message protocol based on the account it came from
 		msg.Protocol = r.getBridge(msg.Account).Protocol

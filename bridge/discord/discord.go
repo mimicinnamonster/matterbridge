@@ -92,6 +92,8 @@ func (b *Bdiscord) Connect() error {
 	if b.GetInt("debuglevel") == 1 {
 		b.c.AddHandler(b.messageEvent)
 	}
+	b.c.AddHandler(b.channelCreate)
+	b.c.AddHandler(b.channelDelete)
 	// Add privileged intent for guild member tracking. This is needed to track nicks
 	// for display names and @mention translation
 	b.c.Identify.Intents = discordgo.MakeIntent(discordgo.IntentsAllWithoutPrivileged |

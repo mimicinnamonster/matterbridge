@@ -265,6 +265,57 @@ func (b *Bdiscord) memberRemove(s *discordgo.Session, m *discordgo.GuildMemberRe
 	b.Remote <- rmsg
 }
 
+func (b *Bdiscord) channelCreate(s *discordgo.Session, m *discordgo.ChannelCreate) {
+	if m.GuildID != b.guildID {
+		return
+	}
+	// Only handle text channels
+	if m.Type != discordgo.ChannelTypeGuildText {
+		return
+	}
+
+	b.channelsMutex.Lock()
+	b.channels = append(b.channels, m.Channel)
+	b.channelsMutex.Unlock()
+
+	rmsg := config.Message{
+		Account: b.Account,
+		Event:   config.EventChannelCreate,
+		Channel: b.getChannelName(m.ID),
+		Text:    m.Name,
+	}
+	b.Log.Debugf("<= Sending ChannelCreate from %s to gateway: %#v", b.Account, rmsg)
+	b.Remote <- rmsg
+}
+
+func (b *Bdiscord) channelDelete(s *discordgo.Session, m *discordgo.ChannelDelete) {
+	if m.GuildID != b.guildID {
+		return
+	}
+	// Only handle text channels
+	if m.Type != discordgo.ChannelTypeGuildText {
+		return
+	}
+
+	b.channelsMutex.Lock()
+	for i, channel := range b.channels {
+		if channel.ID == m.ID {
+			b.channels = append(b.channels[:i], b.channels[i+1:]...)
+			break
+		}
+	}
+	b.channelsMutex.Unlock()
+
+	rmsg := config.Message{
+		Account: b.Account,
+		Event:   config.EventChannelDelete,
+		Channel: b.getChannelName(m.ID),
+		Text:    m.Name,
+	}
+	b.Log.Debugf("<= Sending ChannelDelete from %s to gateway: %#v", b.Account, rmsg)
+	b.Remote <- rmsg
+}
+
 func handleEmbed(embed *discordgo.MessageEmbed) string {
 	var t []string
 	var result string
