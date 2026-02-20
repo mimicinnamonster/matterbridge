@@ -387,6 +387,14 @@ func (b *Birc) skipPrivMsg(event girc.Event) bool {
 			return true
 		}
 	}
+
+	whitelist := b.GetStringSlice("UnregisteredWhitelist")
+	for _, nick := range whitelist {
+		if strings.EqualFold(nick, event.Source.Name) {
+			return false
+		}
+	}
+
 	// don't forward messages we sent via RELAYMSG
 	if relayedNick, ok := event.Tags.Get("draft/relaymsg"); ok && relayedNick == b.Nick {
 		return true

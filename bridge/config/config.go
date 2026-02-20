@@ -106,6 +106,7 @@ type Protocol struct {
 	IgnoreFailureOnStart   bool     // general
 	IgnoreNicks            string   // all protocols
 	IgnoreUnregistered     []string // irc
+	UnregisteredWhitelist  []string // irc
 	IgnoreMessages         string   // all protocols
 	Jid                    string   // xmpp
 	JoinDelay              string   // all protocols
