@@ -3,6 +3,7 @@ package gateway
 import (
 	"strings"
 
+	"github.com/42wim/matterbridge/bridge"
 	"github.com/42wim/matterbridge/bridge/config"
 )
 
@@ -191,4 +192,40 @@ func bIRCToDiscord(name string) string {
 		return name
 	}
 	return strings.Repeat("_", prefixCount) + name[prefixCount:]
+}
+
+// syncExistingChannels emits synthetic EventChannelCreate messages for all
+// existing channels on bridges that support ExistingChannelLister.
+// This triggers the same dynamic bridging logic used for newly created channels,
+// ensuring pre-existing channels are auto-joined at startup.
+func (r *Router) syncExistingChannels() {
+	for _, gw := range r.Gateways {
+		for _, channel := range gw.Channels {
+			if channel.Name != "*" {
+				continue
+			}
+
+			account := channel.Account
+			br, ok := gw.Bridges[account]
+			if !ok {
+				continue
+			}
+
+			lister, ok := br.Bridger.(bridge.ExistingChannelLister)
+			if !ok {
+				continue
+			}
+
+			r.logger.Infof("syncing existing channels from %s", account)
+			for _, chName := range lister.GetExistingChannels() {
+				r.logger.Debugf("emitting synthetic channel create for %s on %s", chName, account)
+				r.Message <- config.Message{
+					Account: account,
+					Event:   config.EventChannelCreate,
+					Channel: chName,
+					Text:    chName,
+				}
+			}
+		}
+	}
 }

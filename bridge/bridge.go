@@ -18,6 +18,12 @@ type Bridger interface {
 	Disconnect() error
 }
 
+// ExistingChannelLister is an optional interface that bridges can implement
+// to report existing channels at startup for dynamic bridging.
+type ExistingChannelLister interface {
+	GetExistingChannels() []string
+}
+
 type Bridge struct {
 	Bridger
 	*sync.RWMutex

@@ -412,10 +412,12 @@ func (b *Birc) skipPrivMsg(event girc.Event) bool {
 	}
 
 	if shouldIgnore {
-		_, ok := event.Tags.Get("account")
-		if !ok {
-			b.Log.Debugf("Ignoring message from %s in %s (unregistered). Server has account-tag: %t", event.Source.Name, event.Params[0], b.i.HasCapability("account-tag"))
-			return true
+		if b.i.HasCapability("account-tag") {
+			_, ok := event.Tags.Get("account")
+			if !ok {
+				b.Log.Debugf("Ignoring message from %s in %s (unregistered).", event.Source.Name, event.Params[0])
+				return true
+			}
 		}
 	}
 

@@ -254,6 +254,21 @@ func (b *Bdiscord) PartChannel(channel config.ChannelInfo) error {
 	return nil
 }
 
+// GetExistingChannels returns the names of all existing text channels in the guild.
+// This is used by the router to trigger dynamic bridging for pre-existing channels at startup.
+func (b *Bdiscord) GetExistingChannels() []string {
+	b.channelsMutex.RLock()
+	defer b.channelsMutex.RUnlock()
+
+	var channels []string
+	for _, ch := range b.channels {
+		if ch.Type == discordgo.ChannelTypeGuildText {
+			channels = append(channels, b.getCategoryChannelName(ch.Name, ch.ParentID))
+		}
+	}
+	return channels
+}
+
 func (b *Bdiscord) Send(msg config.Message) (string, error) {
 	b.Log.Debugf("=> Receiving %#v", msg)
 

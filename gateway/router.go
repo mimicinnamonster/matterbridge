@@ -100,6 +100,7 @@ func (r *Router) Start() error {
 		}
 	}
 	go r.handleReceive()
+	go r.syncExistingChannels()
 	//go r.updateChannelMembers()
 	return nil
 }
