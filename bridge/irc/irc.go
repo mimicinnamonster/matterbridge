@@ -405,7 +405,7 @@ func (b *Birc) skipPrivMsg(event girc.Event) bool {
 	ignoreChannels := b.GetStringSlice("IgnoreUnregistered")
 	shouldIgnore := false
 	for _, c := range ignoreChannels {
-		if strings.EqualFold(c, event.Params[0]) {
+		if c == "*" || strings.EqualFold(c, event.Params[0]) {
 			shouldIgnore = true
 			break
 		}
