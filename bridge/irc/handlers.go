@@ -185,11 +185,35 @@ func (b *Birc) handlePrivMsg(client *girc.Client, event girc.Event) {
 		return
 	}
 
+	isDM := event.Params[0] == b.Nick && b.GetBool("DirectMessages")
+
+	channel := strings.ToLower(event.Params[0])
+	if isDM {
+		channel = strings.ToLower(event.Source.Name)
+	}
+
 	rmsg := config.Message{
 		Username: event.Source.Name,
-		Channel:  strings.ToLower(event.Params[0]),
+		Channel:  channel,
 		Account:  b.Account,
 		UserID:   event.Source.Ident + "@" + event.Source.Host,
+	}
+
+	if isDM {
+		for _, ignored := range strings.Fields(b.GetString("IgnoreNicks")) {
+			if strings.EqualFold(ignored, event.Source.Name) {
+				return
+			}
+		}
+		if !b.dmChannels[channel] {
+			b.dmChannels[channel] = true
+			b.Remote <- config.Message{
+				Account: b.Account,
+				Event:   config.EventChannelCreate,
+				Channel: channel,
+				Text:    channel,
+			}
+		}
 	}
 
 	b.Log.Debugf("== Receiving PRIVMSG: %s %s %#v", event.Source.Name, event.Last(), event)

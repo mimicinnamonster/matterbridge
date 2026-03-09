@@ -1,11 +1,28 @@
 package gateway
 
 import (
+	"regexp"
 	"strings"
 
 	"github.com/42wim/matterbridge/bridge"
 	"github.com/42wim/matterbridge/bridge/config"
 )
+
+var discordInvalidChars = regexp.MustCompile(`[^a-z0-9\-_]`)
+
+// sanitizeForDiscord converts an IRC nick to a valid Discord channel name.
+// Discord channel names must be lowercase, 2-100 chars, only [a-z0-9-_].
+func sanitizeForDiscord(nick string) string {
+	name := strings.ToLower(nick)
+	name = discordInvalidChars.ReplaceAllString(name, "-")
+	if len(name) < 2 {
+		name = name + "--"
+	}
+	if len(name) > 100 {
+		name = name[:100]
+	}
+	return name
+}
 
 func (r *Router) handleChannelCreate(msg *config.Message) {
 	if msg.Event != config.EventChannelCreate {
@@ -157,6 +174,10 @@ func (r *Router) mapChannelName(srcAccount, destAccount, channelName string) str
 		return bDiscordToIRC(channelName)
 	}
 	if srcProtocol == "irc" && destProtocol == "discord" {
+		// IRC DM nicks have no # prefix — sanitize for Discord
+		if !strings.HasPrefix(channelName, "#") && !strings.HasPrefix(channelName, "&") {
+			return sanitizeForDiscord(channelName)
+		}
 		// IRC -> Discord: # -> _
 		return bIRCToDiscord(channelName)
 	}

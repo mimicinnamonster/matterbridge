@@ -33,6 +33,7 @@ type Birc struct {
 	FirstConnection, authDone                 bool
 	MessageDelay, MessageQueue, MessageLength int
 	channels                                  map[string]bool
+	dmChannels                                map[string]bool
 
 	*bridge.Config
 }
@@ -44,6 +45,7 @@ func New(cfg *bridge.Config) bridge.Bridger {
 	b.names = make(map[string][]string)
 	b.connected = make(chan error)
 	b.channels = make(map[string]bool)
+	b.dmChannels = make(map[string]bool)
 
 	if b.GetInt("MessageDelay") == 0 {
 		b.MessageDelay = 1300
@@ -122,6 +124,10 @@ func (b *Birc) Disconnect() error {
 
 func (b *Birc) JoinChannel(channel config.ChannelInfo) error {
 	b.channels[channel.Name] = true
+	// DM targets are IRC nicks (no # prefix) — no JOIN command needed
+	if !strings.HasPrefix(channel.Name, "#") && !strings.HasPrefix(channel.Name, "&") {
+		return nil
+	}
 	// need to check if we have nickserv auth done before joining channels
 	for {
 		if b.authDone {
@@ -139,8 +145,14 @@ func (b *Birc) JoinChannel(channel config.ChannelInfo) error {
 }
 
 func (b *Birc) PartChannel(channel config.ChannelInfo) error {
-	b.i.Cmd.Part(channel.Name)
 	delete(b.channels, channel.Name)
+	// DM targets are IRC nicks — no PART command, but reset dmChannels so
+	// a future DM re-triggers EventChannelCreate
+	if !strings.HasPrefix(channel.Name, "#") && !strings.HasPrefix(channel.Name, "&") {
+		delete(b.dmChannels, channel.Name)
+		return nil
+	}
+	b.i.Cmd.Part(channel.Name)
 	return nil
 }
 
@@ -377,9 +389,12 @@ func (b *Birc) skipPrivMsg(event girc.Event) bool {
 	if event.Command == "NOTICE" && len(event.Params) != 2 {
 		return true
 	}
-	// don't forward queries to the bot
+	// don't forward queries to the bot (unless DirectMessages is enabled)
 	if event.Params[0] == b.Nick {
-		return true
+		if !b.GetBool("DirectMessages") {
+			return true
+		}
+		// DirectMessages = true: fall through and process the DM
 	}
 	// don't forward message from ourself
 	if event.Source != nil {

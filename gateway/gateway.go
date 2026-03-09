@@ -472,9 +472,15 @@ func (gw *Gateway) SendMessage(
 		}
 	}
 
-	// Only send irc notices to irc
+	// Only send irc notices to irc; for Discord DM channels, forward with code formatting
 	if msg.Event == config.EventNoticeIRC && dest.Protocol != "irc" {
-		return "", nil
+		isDMChannel := !strings.HasPrefix(rmsg.Channel, "#") && !strings.HasPrefix(rmsg.Channel, "&")
+		if dest.Protocol == "discord" && isDMChannel {
+			msg.Text = "`" + msg.Text + "`"
+			msg.Event = ""
+		} else {
+			return "", nil
+		}
 	}
 
 	// Too noisy to log like other events

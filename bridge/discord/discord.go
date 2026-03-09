@@ -247,6 +247,25 @@ func (b *Bdiscord) JoinChannel(channel config.ChannelInfo) error {
 	defer b.channelsMutex.Unlock()
 
 	b.channelInfoMap[channel.ID] = &channel
+
+	// if the channel doesn't exist in the guild yet, create it (skip wildcard)
+	if b.guildID != "" && channel.Name != "*" {
+		var found bool
+		for _, ch := range b.channels {
+			if ch.Name == channel.Name && ch.Type == discordgo.ChannelTypeGuildText {
+				found = true
+				break
+			}
+		}
+		if !found {
+			ch, err := b.c.GuildChannelCreate(b.guildID, channel.Name, discordgo.ChannelTypeGuildText)
+			if err != nil {
+				return fmt.Errorf("failed to create channel %s: %w", channel.Name, err)
+			}
+			b.channels = append(b.channels, ch)
+		}
+	}
+
 	return nil
 }
 
