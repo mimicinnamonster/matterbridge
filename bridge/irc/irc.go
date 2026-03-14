@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/42wim/matterbridge/bridge"
@@ -34,6 +35,8 @@ type Birc struct {
 	MessageDelay, MessageQueue, MessageLength int
 	channels                                  map[string]bool
 	dmChannels                                map[string]bool
+	accountFirstSeen                          map[string]time.Time
+	accountMutex                              sync.Mutex
 
 	*bridge.Config
 }
@@ -46,6 +49,7 @@ func New(cfg *bridge.Config) bridge.Bridger {
 	b.connected = make(chan error)
 	b.channels = make(map[string]bool)
 	b.dmChannels = make(map[string]bool)
+	b.accountFirstSeen = make(map[string]time.Time)
 
 	if b.GetInt("MessageDelay") == 0 {
 		b.MessageDelay = 1300
@@ -338,7 +342,7 @@ func (b *Birc) getClient() (*girc.Client, error) {
 	}
 
 	supportedCaps := map[string][]string{"overdrivenetworks.com/relaymsg": nil, "draft/relaymsg": nil}
-	if len(b.GetStringSlice("IgnoreUnregistered")) > 0 {
+	if len(b.GetStringSlice("IgnoreUnregistered")) > 0 || b.GetInt("IgnoreRegistered") > 0 {
 		supportedCaps["account-tag"] = nil
 	}
 
@@ -440,6 +444,30 @@ func (b *Birc) skipPrivMsg(event girc.Event) bool {
 			if !ok {
 				b.Log.Debugf("Ignoring message from %s in %s (unregistered).", event.Source.Name, event.Params[0])
 				return true
+			}
+		}
+	}
+
+	// IgnoreRegistered: ignore messages from recently registered accounts
+	ignoreDays := b.GetInt("IgnoreRegistered")
+	if ignoreDays > 0 && shouldIgnore && b.i.HasCapability("account-tag") {
+		if account, ok := event.Tags.Get("account"); ok {
+			b.accountMutex.Lock()
+			firstSeen, exists := b.accountFirstSeen[account]
+			b.accountMutex.Unlock()
+
+			if exists {
+				ageDays := time.Since(firstSeen).Hours() / 24
+				if ageDays < float64(ignoreDays) {
+					b.Log.Debugf("Ignoring message from %s (account %s, age %.1f days < %d)",
+						event.Source.Name, account, ageDays, ignoreDays)
+					return true
+				}
+			} else {
+				// First time seeing this account; record for future but don't ignore
+				b.accountMutex.Lock()
+				b.accountFirstSeen[account] = time.Now()
+				b.accountMutex.Unlock()
 			}
 		}
 	}
