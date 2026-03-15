@@ -35,8 +35,9 @@ type Birc struct {
 	MessageDelay, MessageQueue, MessageLength int
 	channels                                  map[string]bool
 	dmChannels                                map[string]bool
-	accountFirstSeen                          map[string]time.Time
-	accountMutex                              sync.Mutex
+	nickServRegCache                          map[string]time.Time // account → NickServ registration date (zero = failed lookup)
+	nickServQueried                           map[string]bool      // accounts already queried; prevents re-querying on failure
+	nickServCacheMu                           sync.Mutex
 
 	*bridge.Config
 }
@@ -49,7 +50,8 @@ func New(cfg *bridge.Config) bridge.Bridger {
 	b.connected = make(chan error)
 	b.channels = make(map[string]bool)
 	b.dmChannels = make(map[string]bool)
-	b.accountFirstSeen = make(map[string]time.Time)
+	b.nickServRegCache = make(map[string]time.Time)
+	b.nickServQueried = make(map[string]bool)
 
 	if b.GetInt("MessageDelay") == 0 {
 		b.MessageDelay = 1300
@@ -342,7 +344,7 @@ func (b *Birc) getClient() (*girc.Client, error) {
 	}
 
 	supportedCaps := map[string][]string{"overdrivenetworks.com/relaymsg": nil, "draft/relaymsg": nil}
-	if len(b.GetStringSlice("IgnoreUnregistered")) > 0 || b.GetInt("IgnoreRegistered") > 0 {
+	if len(b.GetStringSlice("IgnoreUnregistered")) > 0 || len(b.GetStringSlice("IgnoreRegistered")) > 0 {
 		supportedCaps["account-tag"] = nil
 	}
 
@@ -422,7 +424,7 @@ func (b *Birc) skipPrivMsg(event girc.Event) bool {
 		return true
 	}
 
-	whitelist := b.GetStringSlice("UnregisteredWhitelist")
+	whitelist := b.GetStringSlice("IgnoreWhitelist")
 	for _, nick := range whitelist {
 		if strings.EqualFold(nick, event.Source.Name) {
 			return false
@@ -449,25 +451,41 @@ func (b *Birc) skipPrivMsg(event girc.Event) bool {
 	}
 
 	// IgnoreRegistered: ignore messages from recently registered accounts
-	ignoreDays := b.GetInt("IgnoreRegistered")
-	if ignoreDays > 0 && shouldIgnore && b.i.HasCapability("account-tag") {
-		if account, ok := event.Tags.Get("account"); ok {
-			b.accountMutex.Lock()
-			firstSeen, exists := b.accountFirstSeen[account]
-			b.accountMutex.Unlock()
-
-			if exists {
-				ageDays := time.Since(firstSeen).Hours() / 24
-				if ageDays < float64(ignoreDays) {
-					b.Log.Debugf("Ignoring message from %s (account %s, age %.1f days < %d)",
-						event.Source.Name, account, ageDays, ignoreDays)
-					return true
+	ignoreRegisteredChannels := b.GetStringSlice("IgnoreRegistered")
+	ignoreDays := b.GetInt("IgnoreRegisteredDays")
+	if len(ignoreRegisteredChannels) > 0 && ignoreDays > 0 && b.i.HasCapability("account-tag") {
+		channelMatches := false
+		for _, c := range ignoreRegisteredChannels {
+			if c == "*" || strings.EqualFold(c, event.Params[0]) {
+				channelMatches = true
+				break
+			}
+		}
+		if channelMatches {
+			if account, ok := event.Tags.Get("account"); ok {
+				b.nickServCacheMu.Lock()
+				regDate, cached := b.nickServRegCache[account]
+				alreadyQueried := b.nickServQueried[account]
+				if !alreadyQueried {
+					b.nickServQueried[account] = true
 				}
-			} else {
-				// First time seeing this account; record for future but don't ignore
-				b.accountMutex.Lock()
-				b.accountFirstSeen[account] = time.Now()
-				b.accountMutex.Unlock()
+				b.nickServCacheMu.Unlock()
+
+				if cached {
+					// We have a registration date — apply the filter
+					if !regDate.IsZero() {
+						ageDays := time.Since(regDate).Hours() / 24
+						if ageDays < float64(ignoreDays) {
+							b.Log.Debugf("Ignoring message from %s (account %s, registered %.1f days ago < %d days)",
+								event.Source.Name, account, ageDays, ignoreDays)
+							return true
+						}
+					}
+					// zero regDate = failed lookup, allow through
+				} else if !alreadyQueried {
+					// First time seeing this account — fire background NickServ query, let message through
+					go b.fetchNickServRegistration(account)
+				}
 			}
 		}
 	}
@@ -488,6 +506,106 @@ func (b *Birc) storeNames(client *girc.Client, event girc.Event) {
 
 func (b *Birc) formatnicks(nicks []string) string {
 	return strings.Join(nicks, ", ") + " currently on IRC"
+}
+
+// nickServName returns the configured NickServ bot name, defaulting to "NickServ".
+func (b *Birc) nickServName() string {
+	if n := b.GetString("NickServNick"); n != "" {
+		return n
+	}
+	return "NickServ"
+}
+
+// fetchNickServRegistration queries NickServ for the registration date of the given account,
+// caches the result (or a zero time on failure), and never re-queries the same account.
+// It is intended to be called in a goroutine.
+func (b *Birc) fetchNickServRegistration(account string) {
+	nsName := b.nickServName()
+	b.Log.Debugf("Querying %s for registration date of account %s", nsName, account)
+	b.i.Cmd.Message(nsName, "INFO "+account) //nolint:errcheck
+
+	var regDate time.Time
+	found := false
+
+	_, done := b.i.Handlers.AddTmp(girc.NOTICE, 15*time.Second, func(c *girc.Client, e girc.Event) bool {
+		src := ""
+		if e.Source != nil {
+			src = e.Source.Name
+		}
+		b.Log.Debugf("fetchNickServRegistration AddTmp fired: source=%q params=%v text=%q (want source=%q)", src, e.Params, e.Last(), nsName)
+		if e.Source == nil || !strings.EqualFold(e.Source.Name, nsName) {
+			return false
+		}
+		text := girc.StripRaw(e.Last())
+		// Parse the registration date line (contains "registered" case-insensitively)
+		if !found && strings.Contains(strings.ToLower(text), "registered") {
+			if t, err := parseNickServDate(text); err == nil {
+				regDate = t
+				found = true
+			} else {
+				b.Log.Debugf("fetchNickServRegistration: failed to parse date from %q: %v", text, err)
+			}
+		}
+		// End-of-INFO markers from Atheme and Anope (strip formatting before comparing)
+		if strings.Contains(text, "*** End of Info ***") ||
+			strings.Contains(text, "isn't registered") ||
+			strings.Contains(text, "is not registered") {
+			return true // remove handler
+		}
+		return false
+	})
+
+	<-done
+
+	b.nickServCacheMu.Lock()
+	if found {
+		b.nickServRegCache[account] = regDate
+		b.Log.Debugf("NickServ: account %s registered on %s", account, regDate.Format(time.RFC3339))
+	} else {
+		b.nickServRegCache[account] = time.Time{} // zero = failed; don't retry
+		b.Log.Warnf("Could not fetch NickServ registration date for account %s (query failed or timed out)", account)
+	}
+	b.nickServCacheMu.Unlock()
+}
+
+// parseNickServDate extracts and parses the registration date from a NickServ INFO NOTICE line.
+// It handles common formats from Atheme (Libera.chat) and Anope.
+func parseNickServDate(line string) (time.Time, error) {
+	// Find the colon separating the field name from the value and take everything after it.
+	// Examples:
+	//   "Registered : Jan 02 00:00:00 2020 UTC"   (Atheme)
+	//   "Registered: Mon Jan 02 00:00:00 2020"     (Anope)
+	//   "Time registered : Jan 02 00:00:00 2020 UTC"
+	idx := strings.Index(line, ":")
+	if idx < 0 {
+		return time.Time{}, fmt.Errorf("no colon in NickServ line: %q", line)
+	}
+	dateStr := strings.TrimSpace(line[idx+1:])
+
+	// Libera/Atheme appends a human-readable age suffix in parentheses, e.g.:
+	//   "Jul 03 18:30:15 2021 +0000 (4y 36w 3d ago)"
+	// Strip everything from the first " (" onward.
+	if i := strings.Index(dateStr, " ("); i >= 0 {
+		dateStr = strings.TrimSpace(dateStr[:i])
+	}
+
+	formats := []string{
+		"Jan 02 15:04:05 2006 MST",   // Atheme with named timezone (e.g. UTC)
+		"Jan 02 15:04:05 2006 -0700", // Atheme with numeric offset
+		"Jan 02 15:04:05 2006",       // Atheme without timezone
+		"Mon Jan 02 15:04:05 2006",   // Anope
+		"Jan 02 2006 15:04:05",       // alternate
+	}
+	for _, f := range formats {
+		if t, err := time.Parse(f, dateStr); err == nil {
+			return t, nil
+		}
+	}
+	// Some networks store a Unix timestamp
+	if ts, err := strconv.ParseInt(dateStr, 10, 64); err == nil {
+		return time.Unix(ts, 0), nil
+	}
+	return time.Time{}, fmt.Errorf("unrecognized NickServ date format: %q", dateStr)
 }
 
 func (b *Birc) getTLSConfig() (*tls.Config, error) {

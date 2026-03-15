@@ -107,8 +107,9 @@ type Protocol struct {
 	IgnoreFailureOnStart   bool     // general
 	IgnoreNicks            string   // all protocols
 	IgnoreUnregistered     []string // irc
-	IgnoreRegistered       int      // irc, days to ignore recently registered accounts
-	UnregisteredWhitelist  []string // irc
+	IgnoreRegistered       []string // irc, channels where recently registered accounts are ignored (supports "*")
+	IgnoreRegisteredDays   int      // irc, account must be at least this many days old to not be ignored (default 30)
+	IgnoreWhitelist        []string // irc, bypasses both IgnoreUnregistered and IgnoreRegistered
 	IgnoreMessages         string   // all protocols
 	Jid                    string   // xmpp
 	JoinDelay              string   // all protocols

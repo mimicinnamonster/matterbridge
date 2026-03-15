@@ -148,11 +148,26 @@ func (b *Birc) handleNickServ() {
 }
 
 func (b *Birc) handleNotice(client *girc.Client, event girc.Event) {
-	if strings.Contains(event.String(), "This nickname is registered") && event.Source.Name == b.GetString("NickServNick") {
-		b.handleNickServ()
-	} else {
+	if event.Source == nil {
 		b.handlePrivMsg(client, event)
+		return
 	}
+	nsName := b.nickServName()
+	b.Log.Debugf("handleNotice: source=%q params=%v text=%q", event.Source.Name, event.Params, event.Last())
+	// Re-auth challenge from NickServ
+	if strings.Contains(event.String(), "This nickname is registered") && strings.EqualFold(event.Source.Name, nsName) {
+		b.handleNickServ()
+		return
+	}
+	// Suppress NickServ INFO responses directed at the bot (not a channel).
+	// These are consumed by the AddTmp handler in fetchNickServRegistration and
+	// must not be relayed to the gateway.
+	if strings.EqualFold(event.Source.Name, nsName) &&
+		len(event.Params) > 0 && strings.EqualFold(event.Params[0], b.Nick) {
+		b.Log.Debugf("handleNotice: suppressing NickServ notice to bot nick=%q", b.Nick)
+		return
+	}
+	b.handlePrivMsg(client, event)
 }
 
 func (b *Birc) handleOther(client *girc.Client, event girc.Event) {

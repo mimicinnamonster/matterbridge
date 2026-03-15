@@ -102,3 +102,26 @@ Uses golangci-lint with `enable-all: true` and a long disable list. Config in `.
 ## Current Branch Work (`mine`)
 
 Dynamic channel bridging: wildcard channels, auto-join/part, `IgnoreUnregistered` with wildcard support, and `UnregisteredWhitelist`. Key files: `gateway/dynamic.go`, `gateway/dynamic_test.go`, and protocol-level changes in `bridge/discord/` and `bridge/irc/`.
+
+Also added: `IgnoreRegistered` option on the IRC bridge (tracks account first-seen time, ignores messages from recently registered accounts for N days).
+
+## Deployment
+
+Server: `ubuntu@oracle` via SSH. Matterbridge runs via **nohup** (not systemd).
+
+```bash
+# Build Linux amd64 binary
+./make.sh
+
+# Deploy
+scp matterbridge ubuntu@oracle:~/matterbridge/matterbridge
+ssh ubuntu@oracle 'pkill matterbridge; cd ~/matterbridge && nohup ./matterbridge -conf matterbridge.toml > matterbridge.log 2>&1 & disown'
+
+# Check logs
+ssh ubuntu@oracle 'tail -50 ~/matterbridge/matterbridge.log'
+```
+
+- Config on server: `~/matterbridge/matterbridge.toml` (edit in place for config-only changes)
+- Log on server: `~/matterbridge/matterbridge.log`
+- **The server does not auto-update.** After any code change, rebuild and redeploy the binary.
+- SSH commands that background a process must end with `&& echo "done"` to avoid the session hanging (e.g. `nohup ... & disown && echo "done"`)
