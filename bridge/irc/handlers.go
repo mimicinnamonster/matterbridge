@@ -159,12 +159,14 @@ func (b *Birc) handleNotice(client *girc.Client, event girc.Event) {
 		b.handleNickServ()
 		return
 	}
-	// Suppress NickServ INFO responses directed at the bot (not a channel).
-	// These are consumed by the AddTmp handler in fetchNickServRegistration and
-	// must not be relayed to the gateway.
+	// Suppress NickServ NOTICEs directed at the bot only while an automatic
+	// INFO query (fetchNickServRegistration) is in flight. This avoids relaying
+	// INFO response spam, while still allowing real NickServ messages (e.g.
+	// from a manual /msg NickServ) to create a DM channel and be bridged.
 	if strings.EqualFold(event.Source.Name, nsName) &&
-		len(event.Params) > 0 && strings.EqualFold(event.Params[0], b.Nick) {
-		b.Log.Debugf("handleNotice: suppressing NickServ notice to bot nick=%q", b.Nick)
+		len(event.Params) > 0 && strings.EqualFold(event.Params[0], b.Nick) &&
+		b.nickServInfoInFlight.Load() > 0 {
+		b.Log.Debugf("handleNotice: suppressing NickServ notice to bot nick=%q (INFO query in flight)", b.Nick)
 		return
 	}
 	b.handlePrivMsg(client, event)

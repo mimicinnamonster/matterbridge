@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/42wim/matterbridge/bridge"
@@ -38,6 +39,7 @@ type Birc struct {
 	nickServRegCache                          map[string]time.Time // account → NickServ registration date (zero = failed lookup)
 	nickServQueried                           map[string]bool      // accounts already queried; prevents re-querying on failure
 	nickServCacheMu                           sync.Mutex
+	nickServInfoInFlight                      atomic.Int32 // number of fetchNickServRegistration queries in flight
 
 	*bridge.Config
 }
@@ -522,6 +524,8 @@ func (b *Birc) nickServName() string {
 func (b *Birc) fetchNickServRegistration(account string) {
 	nsName := b.nickServName()
 	b.Log.Debugf("Querying %s for registration date of account %s", nsName, account)
+	b.nickServInfoInFlight.Add(1)
+	defer b.nickServInfoInFlight.Add(-1)
 	b.i.Cmd.Message(nsName, "INFO "+account) //nolint:errcheck
 
 	var regDate time.Time

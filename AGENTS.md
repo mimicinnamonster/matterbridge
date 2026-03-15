@@ -113,9 +113,9 @@ Server: `ubuntu@oracle` via SSH. Matterbridge runs via **nohup** (not systemd).
 # Build Linux amd64 binary
 ./make.sh
 
-# Deploy
-scp matterbridge ubuntu@oracle:~/matterbridge/matterbridge
-ssh ubuntu@oracle 'pkill matterbridge; cd ~/matterbridge && nohup ./matterbridge -conf matterbridge.toml > matterbridge.log 2>&1 & disown'
+# Deploy (upload as .new then replace, to avoid scp failing on existing binary)
+scp /Users/michal/Projects/matterbridge/matterbridge ubuntu@oracle:~/matterbridge/matterbridge.new
+ssh ubuntu@oracle 'pkill matterbridge; mv ~/matterbridge/matterbridge.new ~/matterbridge/matterbridge && cd ~/matterbridge && nohup ./matterbridge -conf matterbridge.toml > matterbridge.log 2>&1 & disown && echo "done"'
 
 # Check logs
 ssh ubuntu@oracle 'tail -50 ~/matterbridge/matterbridge.log'
