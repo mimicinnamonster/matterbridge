@@ -38,6 +38,8 @@ type Birc struct {
 	dmChannels                                map[string]bool
 	nickServRegCache                          map[string]time.Time // account → NickServ registration date (zero = failed lookup)
 	nickServQueried                           map[string]bool      // accounts already queried; prevents re-querying on failure
+	nickServLastChecked                       map[string]time.Time // account → last time the ignore decision was evaluated
+	nickServIgnoreDecision                    map[string]bool      // account → cached ignore decision (true = ignore)
 	nickServCacheMu                           sync.Mutex
 	nickServInfoInFlight                      atomic.Int32 // number of fetchNickServRegistration queries in flight
 
@@ -54,6 +56,8 @@ func New(cfg *bridge.Config) bridge.Bridger {
 	b.dmChannels = make(map[string]bool)
 	b.nickServRegCache = make(map[string]time.Time)
 	b.nickServQueried = make(map[string]bool)
+	b.nickServLastChecked = make(map[string]time.Time)
+	b.nickServIgnoreDecision = make(map[string]bool)
 
 	if b.GetInt("MessageDelay") == 0 {
 		b.MessageDelay = 1300
@@ -471,19 +475,34 @@ func (b *Birc) skipPrivMsg(event girc.Event) bool {
 				if !alreadyQueried {
 					b.nickServQueried[account] = true
 				}
+				lastChecked := b.nickServLastChecked[account]
+				checkedRecently := time.Since(lastChecked) < 24*time.Hour
+				cachedDecision := b.nickServIgnoreDecision[account]
+
+				var shouldIgnore bool
+				if cached {
+					if checkedRecently {
+						// Reuse the cached decision from today
+						shouldIgnore = cachedDecision
+					} else {
+						// Re-evaluate and store the new decision
+						if !regDate.IsZero() {
+							ageDays := time.Since(regDate).Hours() / 24
+							shouldIgnore = ageDays < float64(ignoreDays)
+						}
+						b.nickServLastChecked[account] = time.Now()
+						b.nickServIgnoreDecision[account] = shouldIgnore
+					}
+				}
 				b.nickServCacheMu.Unlock()
 
 				if cached {
-					// We have a registration date — apply the filter
-					if !regDate.IsZero() {
-						ageDays := time.Since(regDate).Hours() / 24
-						if ageDays < float64(ignoreDays) {
-							b.Log.Debugf("Ignoring message from %s (account %s, registered %.1f days ago < %d days)",
-								event.Source.Name, account, ageDays, ignoreDays)
-							return true
-						}
+					if shouldIgnore {
+						b.Log.Debugf("Ignoring message from %s (account %s, cached ignore decision)",
+							event.Source.Name, account)
+						return true
 					}
-					// zero regDate = failed lookup, allow through
+					// zero regDate = failed lookup, or account is old enough — allow through
 				} else if !alreadyQueried {
 					// First time seeing this account — fire background NickServ query, let message through
 					go b.fetchNickServRegistration(account)
