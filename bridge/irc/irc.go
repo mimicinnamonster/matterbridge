@@ -41,8 +41,11 @@ type Birc struct {
 	nickServLastChecked                       map[string]time.Time // account → last time the ignore decision was evaluated
 	nickServIgnoreDecision                    map[string]bool      // account → cached ignore decision (true = ignore)
 	nickServCacheMu                           sync.Mutex
-	nickServInfoInFlight                      atomic.Int32 // number of fetchNickServRegistration queries in flight
-
+	nickServInfoInFlight                      atomic.Int32                // number of fetchNickServRegistration queries in flight
+	nickServActiveQueries                     map[string]bool             // track accounts with active NickServ queries
+	nickServRetries                           map[string]int              // account → number of NickServ INFO retry attempts
+	pendingMessages                           map[string][]config.Message // messages from accounts awaiting NickServ verification
+	pendingMessagesMu                         sync.Mutex
 	*bridge.Config
 }
 
@@ -58,6 +61,9 @@ func New(cfg *bridge.Config) bridge.Bridger {
 	b.nickServQueried = make(map[string]bool)
 	b.nickServLastChecked = make(map[string]time.Time)
 	b.nickServIgnoreDecision = make(map[string]bool)
+	b.nickServRetries = make(map[string]int)
+	b.nickServActiveQueries = make(map[string]bool)
+	b.pendingMessages = make(map[string][]config.Message)
 
 	if b.GetInt("MessageDelay") == 0 {
 		b.MessageDelay = 1300
@@ -266,11 +272,25 @@ func (b *Birc) doSend() {
 	for msg := range b.Local {
 		<-throttle.C
 		username := msg.Username
+
+		// Check if sending to IRC services (nickserv, alis, etc.)
+		// These services expect commands without username prefix
+		channel := msg.Channel
+		isService := false
+		serviceName := ""
+		if !strings.HasPrefix(channel, "#") && !strings.HasPrefix(channel, "&") {
+			// Not a channel, check if it's a known service
+			serviceName = strings.ToLower(channel)
+			if serviceName == "nickserv" || serviceName == "alis" || serviceName == "chanserv" || serviceName == "memoserv" || serviceName == "botserv" || serviceName == "operserv" || serviceName == "hostserv" || serviceName == "globalserv" {
+				isService = true
+			}
+		}
+
 		// Optional support for the proposed RELAYMSG extension, described at
 		// https://github.com/jlu5/ircv3-specifications/blob/master/extensions/relaymsg.md
 		// nolint:nestif
 		if (b.i.HasCapability("overdrivenetworks.com/relaymsg") || b.i.HasCapability("draft/relaymsg")) &&
-			b.GetBool("UseRelayMsg") {
+			b.GetBool("UseRelayMsg") && !isService {
 			username = sanitizeNick(username)
 			text := msg.Text
 
@@ -286,20 +306,26 @@ func (b *Birc) doSend() {
 				b.i.Cmd.SendRawf("RELAYMSG %s %s :%s", msg.Channel, username, text) //nolint:errcheck
 			}
 		} else {
-			if b.GetBool("Colornicks") {
-				checksum := crc32.ChecksumIEEE([]byte(msg.Username))
-				colorCode := checksum%14 + 2 // quick fix - prevent white or black color codes
-				username = fmt.Sprintf("\x03%02d%s\x0F", colorCode, msg.Username)
-			}
-			switch msg.Event {
-			case config.EventUserAction:
-				b.i.Cmd.Action(msg.Channel, username+msg.Text)
-			case config.EventNoticeIRC:
-				b.Log.Debugf("Sending notice to channel %s", msg.Channel)
-				b.i.Cmd.Notice(msg.Channel, username+msg.Text)
-			default:
-				b.Log.Debugf("Sending to channel %s", msg.Channel)
-				b.i.Cmd.Message(msg.Channel, username+msg.Text)
+			if isService {
+				// Send directly to service without username prefix
+				b.Log.Debugf("Sending to service %s: %s", msg.Channel, msg.Text)
+				b.i.Cmd.Message(msg.Channel, msg.Text)
+			} else {
+				if b.GetBool("Colornicks") {
+					checksum := crc32.ChecksumIEEE([]byte(msg.Username))
+					colorCode := checksum%14 + 2 // quick fix - prevent white or black color codes
+					username = fmt.Sprintf("\x03%02d%s\x0F", colorCode, msg.Username)
+				}
+				switch msg.Event {
+				case config.EventUserAction:
+					b.i.Cmd.Action(msg.Channel, username+msg.Text)
+				case config.EventNoticeIRC:
+					b.Log.Debugf("Sending notice to channel %s", msg.Channel)
+					b.i.Cmd.Notice(msg.Channel, username+msg.Text)
+				default:
+					b.Log.Debugf("Sending to channel %s", msg.Channel)
+					b.i.Cmd.Message(msg.Channel, username+msg.Text)
+				}
 			}
 		}
 	}
@@ -471,10 +497,6 @@ func (b *Birc) skipPrivMsg(event girc.Event) bool {
 			if account, ok := event.Tags.Get("account"); ok {
 				b.nickServCacheMu.Lock()
 				regDate, cached := b.nickServRegCache[account]
-				alreadyQueried := b.nickServQueried[account]
-				if !alreadyQueried {
-					b.nickServQueried[account] = true
-				}
 				lastChecked := b.nickServLastChecked[account]
 				checkedRecently := time.Since(lastChecked) < 24*time.Hour
 				cachedDecision := b.nickServIgnoreDecision[account]
@@ -493,6 +515,11 @@ func (b *Birc) skipPrivMsg(event girc.Event) bool {
 						b.nickServLastChecked[account] = time.Now()
 						b.nickServIgnoreDecision[account] = shouldIgnore
 					}
+				} else if !checkedRecently && !b.nickServActiveQueries[account] {
+					// First time seeing this account or not checked in 24 hours
+					// Set lastChecked timestamp (retry count will be read and incremented before fetch)
+					b.nickServLastChecked[account] = time.Now()
+					b.nickServQueried[account] = true
 				}
 				b.nickServCacheMu.Unlock()
 
@@ -503,15 +530,115 @@ func (b *Birc) skipPrivMsg(event girc.Event) bool {
 						return true
 					}
 					// zero regDate = failed lookup, or account is old enough — allow through
-				} else if !alreadyQueried {
-					// First time seeing this account — fire background NickServ query, let message through
-					go b.fetchNickServRegistration(account)
+				} else if !checkedRecently && !b.nickServActiveQueries[account] {
+					// First time seeing this account or not checked in 24 hours — fire background NickServ query, HOLD message
+					retryCount := b.nickServRetries[account]
+					var delay time.Duration
+					switch retryCount {
+					case 0:
+						delay = 0
+					case 1:
+						delay = 2 * time.Second
+					case 2:
+						delay = 5 * time.Second
+					default:
+						// Give up after 3 retries, let message through
+						b.Log.Warnf("Giving up NickServ verification for account %s after %d retries, allowing messages through", account, retryCount)
+					}
+					if retryCount < 3 {
+						b.nickServRetries[account]++
+						b.Log.Debugf("Holding message from %s (account %s) pending NickServ verification (retry %d, delay %v)", event.Source.Name, account, retryCount, delay)
+						b.queueMessageForAccount(account, event)
+						go func() {
+							if delay > 0 {
+								time.Sleep(delay)
+							}
+							b.fetchNickServRegistration(account)
+						}()
+						return true
+					}
 				}
 			}
 		}
 	}
 
 	return false
+}
+
+// queueMessageForAccount stores a message from an account that is pending NickServ verification
+func (b *Birc) queueMessageForAccount(account string, event girc.Event) {
+	b.pendingMessagesMu.Lock()
+	defer b.pendingMessagesMu.Unlock()
+
+	channel := event.Params[0]
+	if channel == b.Nick && b.GetBool("DirectMessages") {
+		channel = strings.ToLower(event.Source.Name)
+	}
+
+	msg := config.Message{
+		Username: event.Source.Name,
+		Channel:  channel,
+		Account:  b.Account,
+		UserID:   event.Source.Ident + "@" + event.Source.Host,
+		Text:     event.StripAction(),
+	}
+
+	// Set action event if this is an ACTION
+	if event.IsAction() {
+		msg.Event = config.EventUserAction
+	}
+
+	// Set NOTICE event
+	if event.Command == "NOTICE" {
+		msg.Event = config.EventNoticeIRC
+	}
+
+	b.pendingMessages[account] = append(b.pendingMessages[account], msg)
+	b.Log.Debugf("Queued message from %s (account %s) pending NickServ verification", event.Source.Name, account)
+}
+
+// processPendingMessages processes all queued messages for an account after NickServ verification
+func (b *Birc) processPendingMessages(account string) {
+	b.pendingMessagesMu.Lock()
+	defer b.pendingMessagesMu.Unlock()
+
+	messages, exists := b.pendingMessages[account]
+	if !exists {
+		return
+	}
+
+	ignoreDays := b.GetInt("IgnoreRegisteredDays")
+	ignoreRegisteredChannels := b.GetStringSlice("IgnoreRegistered")
+
+	// Check if this account should be ignored based on registration age
+	shouldIgnore := false
+	if regDate, ok := b.nickServRegCache[account]; ok && !regDate.IsZero() {
+		ageDays := time.Since(regDate).Hours() / 24
+		shouldIgnore = ageDays < float64(ignoreDays)
+	}
+
+	b.Log.Debugf("Processing %d pending messages for account %s (shouldIgnore=%v)", len(messages), account, shouldIgnore)
+
+	for _, msg := range messages {
+		// Check if the message channel is in the ignore list
+		channelMatches := false
+		for _, c := range ignoreRegisteredChannels {
+			if c == "*" || strings.EqualFold(c, msg.Channel) {
+				channelMatches = true
+				break
+			}
+		}
+
+		// Only send the message if it's not from an ignored account/channel combination
+		if !(channelMatches && shouldIgnore) {
+			b.Log.Debugf("Forwarding held message from %s (account %s)", msg.Username, account)
+			b.Remote <- msg
+		} else {
+			b.Log.Debugf("Ignoring held message from %s (account %s, too recently registered)", msg.Username, account)
+		}
+	}
+	// Clear the pending messages for this account
+	delete(b.pendingMessages, account)
 }
 
 func (b *Birc) nicksPerRow() int {
@@ -543,14 +670,28 @@ func (b *Birc) nickServName() string {
 func (b *Birc) fetchNickServRegistration(account string) {
 	nsName := b.nickServName()
 	b.Log.Debugf("Querying %s for registration date of account %s", nsName, account)
+
+	// Mark this account as having an active query
+	b.nickServCacheMu.Lock()
+	b.nickServActiveQueries[account] = true
+	b.nickServCacheMu.Unlock()
+
 	b.nickServInfoInFlight.Add(1)
 	defer b.nickServInfoInFlight.Add(-1)
+
+	// Clean up the active query when done
+	defer func() {
+		b.nickServCacheMu.Lock()
+		delete(b.nickServActiveQueries, account)
+		b.nickServCacheMu.Unlock()
+	}()
+
 	b.i.Cmd.Message(nsName, "INFO "+account) //nolint:errcheck
 
 	var regDate time.Time
 	found := false
 
-	_, done := b.i.Handlers.AddTmp(girc.NOTICE, 15*time.Second, func(c *girc.Client, e girc.Event) bool {
+	_, done := b.i.Handlers.AddTmp(girc.NOTICE, 2*time.Second, func(c *girc.Client, e girc.Event) bool {
 		src := ""
 		if e.Source != nil {
 			src = e.Source.Name
@@ -583,11 +724,19 @@ func (b *Birc) fetchNickServRegistration(account string) {
 	b.nickServCacheMu.Lock()
 	if found {
 		b.nickServRegCache[account] = regDate
-		b.Log.Debugf("NickServ: account %s registered on %s", account, regDate.Format(time.RFC3339))
+		b.nickServLastChecked[account] = time.Now()
+		b.nickServRetries[account] = 0 // Clear retry counter on success
+		// Set the ignore decision based on account age
+		ignoreDays := b.GetInt("IgnoreRegisteredDays")
+		ageDays := time.Since(regDate).Hours() / 24
+		b.nickServIgnoreDecision[account] = ageDays < float64(ignoreDays)
+		b.Log.Debugf("NickServ: account %s registered on %s (ignore decision: %v)", account, regDate.Format(time.RFC3339), b.nickServIgnoreDecision[account])
 	} else {
-		b.nickServRegCache[account] = time.Time{} // zero = failed; don't retry
-		b.Log.Warnf("Could not fetch NickServ registration date for account %s (query failed or timed out)", account)
+		b.Log.Warnf("Could not fetch NickServ registration date for account %s (query failed or timed out, retry %d)", account, b.nickServRetries[account])
 	}
+
+	// Process any pending messages for this account
+	b.processPendingMessages(account)
 	b.nickServCacheMu.Unlock()
 }
 

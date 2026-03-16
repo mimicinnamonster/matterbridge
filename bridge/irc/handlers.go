@@ -159,15 +159,21 @@ func (b *Birc) handleNotice(client *girc.Client, event girc.Event) {
 		b.handleNickServ()
 		return
 	}
-	// Suppress NickServ NOTICEs directed at the bot only while an automatic
+	// Suppress all NickServ NOTICEs directed at the bot while an automatic
 	// INFO query (fetchNickServRegistration) is in flight. This avoids relaying
-	// INFO response spam, while still allowing real NickServ messages (e.g.
-	// from a manual /msg NickServ) to create a DM channel and be bridged.
-	if strings.EqualFold(event.Source.Name, nsName) &&
-		len(event.Params) > 0 && strings.EqualFold(event.Params[0], b.Nick) &&
-		b.nickServInfoInFlight.Load() > 0 {
-		b.Log.Debugf("handleNotice: suppressing NickServ notice to bot nick=%q (INFO query in flight)", b.Nick)
-		return
+	// any INFO response lines (registration date, flags, end-of-info, etc.)
+	// to other bridges, while still allowing real NickServ messages to be
+	// bridged when no query is in flight.
+	// Note: check both b.Nick and "*" as ZNC may rewrite the target.
+	if strings.EqualFold(event.Source.Name, nsName) && b.nickServInfoInFlight.Load() > 0 {
+		target := ""
+		if len(event.Params) > 0 {
+			target = event.Params[0]
+		}
+		if strings.EqualFold(target, b.Nick) || target == "*" {
+			b.Log.Debugf("handleNotice: suppressing NickServ notice to %q (INFO query in flight)", target)
+			return
+		}
 	}
 	b.handlePrivMsg(client, event)
 }
