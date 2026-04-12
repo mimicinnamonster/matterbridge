@@ -168,6 +168,25 @@ enable=true
     channel="--333333333333"
 `)
 
+var testconfigWildcard = []byte(`
+[irc.test]
+server=""
+[discord.test]
+server=""
+
+[[gateway]]
+name = "wildcard"
+enable=true
+
+    [[gateway.inout]]
+    account = "irc.test"
+    channel = "*"
+
+    [[gateway.inout]]
+    account="discord.test"
+    channel="*"
+`)
+
 const (
 	ircTestAccount   = "irc.zzz"
 	tgTestAccount    = "telegram.zzz"
@@ -247,6 +266,57 @@ func TestGetDestChannel(t *testing.T) {
 			assert.Equal(t, []config.ChannelInfo(nil), r.Gateways["bridge1"].getDestChannel(msg, *br))
 		}
 	}
+}
+
+func TestGetDestChannelWildcardDynamic(t *testing.T) {
+	r := maketestRouter(testconfigWildcard)
+	gw := r.Gateways["wildcard"]
+
+	brIRC := gw.Bridges["irc.test"]
+	brDiscord := gw.Bridges["discord.test"]
+
+	gw.Channels["#uxnirc.test"] = &config.ChannelInfo{
+		Name:        "#uxn",
+		Account:     "irc.test",
+		Direction:   "inout",
+		ID:          "#uxnirc.test",
+		SameChannel: map[string]bool{},
+		Options:     config.ChannelOptions{},
+	}
+	gw.Channels["_uxndiscord.test"] = &config.ChannelInfo{
+		Name:        "_uxn",
+		Account:     "discord.test",
+		Direction:   "inout",
+		ID:          "_uxndiscord.test",
+		SameChannel: map[string]bool{},
+		Options:     config.ChannelOptions{},
+	}
+
+	msg := &config.Message{Text: "test", Channel: "#uxn", Account: "irc.test", Gateway: "wildcard", Protocol: "irc", Username: "testuser"}
+
+	t.Run("IRC source to IRC dest should only return dynamic channel", func(t *testing.T) {
+		channels := gw.getDestChannel(msg, *brIRC)
+		t.Logf("got %d channels:", len(channels))
+		for i, c := range channels {
+			t.Logf("  [%d] %+v", i, c)
+		}
+		assert.Len(t, channels, 1, "should return exactly 1 channel, not both wildcard and dynamic")
+		if len(channels) == 1 {
+			assert.Equal(t, "#uxn", channels[0].Name)
+		}
+	})
+
+	t.Run("IRC source to Discord dest should return dynamic channel", func(t *testing.T) {
+		channels := gw.getDestChannel(msg, *brDiscord)
+		t.Logf("got %d channels:", len(channels))
+		for i, c := range channels {
+			t.Logf("  [%d] %+v", i, c)
+		}
+		assert.Len(t, channels, 1, "should return exactly 1 channel")
+		if len(channels) == 1 {
+			assert.Equal(t, "_uxn", channels[0].Name)
+		}
+	})
 }
 
 func TestGetDestChannelAdvanced(t *testing.T) {

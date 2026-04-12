@@ -1,6 +1,8 @@
 package bdiscord
 
 import (
+	"strings"
+
 	"github.com/42wim/matterbridge/bridge/config"
 	"github.com/bwmarrin/discordgo"
 	"github.com/davecgh/go-spew/spew"
@@ -87,14 +89,18 @@ func (b *Bdiscord) messageCreate(s *discordgo.Session, m *discordgo.MessageCreat
 		b.Log.Debugf("Ignoring messageCreate because it originates from a different guild")
 		return
 	}
+
+	b.Log.Debugf("Discord messageCreate: author=%s, content=%q", m.Author.Username, m.Content)
+
 	var err error
 
 	// not relay our own messages
 	if m.Author.Username == b.nick {
 		return
 	}
-	// if using webhooks, do not relay if it's ours
-	if m.Author.Bot && b.transmitter.HasWebhook(m.Author.ID) {
+	// if this message came from one of our webhooks, don't relay it
+	// (Discord echoes webhook messages back to us)
+	if m.WebhookID != "" && b.transmitter.HasWebhook(m.WebhookID) {
 		return
 	}
 
@@ -152,6 +158,13 @@ func (b *Bdiscord) messageCreate(s *discordgo.Session, m *discordgo.MessageCreat
 
 	// Replace emotes
 	rmsg.Text = replaceEmotes(rmsg.Text)
+
+	// Check for IRC command syntax: !irc <command>
+	// This allows Discord users to send raw IRC commands
+	if strings.HasPrefix(rmsg.Text, "!irc ") {
+		rmsg.IRCCommand = true
+		rmsg.Text = strings.TrimPrefix(rmsg.Text, "!irc ")
+	}
 
 	// Add our parent id if it exists, and if it's not referring to a message in another channel
 	ref := m.MessageReference

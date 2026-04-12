@@ -90,6 +90,12 @@ func (b *Birc) Command(msg *config.Message) string {
 		b.i.Handlers.Add(girc.RPL_ENDOFNAMES, b.endNames)
 		b.i.Cmd.SendRaw("NAMES " + msg.Channel) //nolint:errcheck
 	}
+	
+	// Handle IRC commands sent from Discord using !irc prefix
+	if msg.IRCCommand {
+		b.Log.Infof("Executing IRC command from %s: %s", msg.Username, msg.Text)
+		b.i.Cmd.SendRaw(msg.Text) //nolint:errcheck
+	}
 	return ""
 }
 
@@ -117,6 +123,15 @@ func (b *Birc) Connect() error {
 	i.Handlers.Add(girc.RPL_ENDOFMOTD, b.handleOtherAuth)
 	i.Handlers.Add(girc.ERR_NOMOTD, b.handleOtherAuth)
 	i.Handlers.Add(girc.ALL_EVENTS, b.handleOther)
+	
+	// Add handlers for numeric replies to relay to Discord
+	i.Handlers.Add(girc.RPL_TOPIC, b.handleNumericReply)
+	i.Handlers.Add(girc.RPL_AWAY, b.handleNumericReply)
+	i.Handlers.Add(girc.RPL_WHOISUSER, b.handleNumericReply)
+	i.Handlers.Add(girc.RPL_WHOISSERVER, b.handleNumericReply)
+	i.Handlers.Add(girc.RPL_WHOISCHANNELS, b.handleNumericReply)
+	i.Handlers.Add(girc.RPL_WHOREPLY, b.handleNumericReply)
+	
 	b.i = i
 
 	go b.doConnect()
@@ -189,8 +204,9 @@ func (b *Birc) Send(msg config.Message) (string, error) {
 	}
 
 	// Execute a command
-	if strings.HasPrefix(msg.Text, "!") {
+	if strings.HasPrefix(msg.Text, "!") || msg.IRCCommand {
 		b.Command(&msg)
+		return "", nil
 	}
 
 	// convert to specified charset

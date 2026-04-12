@@ -190,7 +190,67 @@ func (b *Birc) handleOther(client *girc.Client, event girc.Event) {
 	case "372", "375", "376", "250", "251", "252", "253", "254", "255", "265", "266", "002", "003", "004", "005":
 		return
 	}
-	b.Log.Debugf("%#v", event.String())
+	
+	// Relay important numeric replies to Discord
+	b.handleNumericReply(client, event)
+}
+
+func (b *Birc) handleNumericReply(client *girc.Client, event girc.Event) {
+	// Only relay if we have a source and params
+	if event.Source == nil || len(event.Params) < 2 {
+		return
+	}
+	
+	// Map numeric codes to human-readable info
+	var text string
+	channel := strings.ToLower(event.Params[1])
+	
+	switch event.Command {
+	case "332": // RPL_TOPIC
+		text = "Topic: " + event.Params[2]
+	case "353": // RPL_NAMREPLY
+		text = "Users: " + event.Params[3]
+	case "366": // RPL_ENDOFNAMES
+		return // Don't relay end of names
+	case "352": // RPL_WHO
+		// WHO reply: channel, ident, host, server, nick, status, hopcount, realname
+		if len(event.Params) >= 8 {
+			text = fmt.Sprintf("WHO: %s [%s@%s] (%s)", event.Params[5], event.Params[2], event.Params[3], event.Params[7])
+		}
+	case "315": // RPL_ENDOFWHO
+		return // Don't relay end of WHO
+	case "301": // RPL_AWAY
+		if len(event.Params) >= 3 {
+			text = fmt.Sprintf("Away: %s is away: %s", event.Params[1], event.Params[2])
+		}
+	case "312": // RPL_WHOISSERVER
+		if len(event.Params) >= 4 {
+			text = fmt.Sprintf("WHOIS: %s is on server %s", event.Params[1], event.Params[2])
+		}
+	case "319": // RPL_WHOISCHANNELS
+		if len(event.Params) >= 3 {
+			text = fmt.Sprintf("WHOIS: %s is in: %s", event.Params[1], event.Params[2])
+		}
+	default:
+		// Log unknown numerics for debugging
+		b.Log.Debugf("handleOther: unhandled numeric %s: %s", event.Command, event.String())
+		return
+	}
+	
+	if text == "" || channel == "" {
+		return
+	}
+	
+	rmsg := config.Message{
+		Username: "IRC-Server",
+		Channel:  channel,
+		Text:     text,
+		Account:  b.Account,
+		UserID:   "irc.numeric",
+	}
+	
+	b.Log.Debugf("handleNumericReply: relaying %s to gateway", text)
+	b.Remote <- rmsg
 }
 
 func (b *Birc) handleOtherAuth(client *girc.Client, event girc.Event) {
