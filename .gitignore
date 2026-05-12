@@ -6,5 +6,8 @@
 matterbridge.toml
 matterbridge_prod.toml
 
+# Exclude agent/workspace files
+AGENTS.md
+
 # Exclude IDE Files
 .vscode
