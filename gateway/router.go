@@ -8,6 +8,7 @@ import (
 	"github.com/42wim/matterbridge/bridge"
 	"github.com/42wim/matterbridge/bridge/config"
 	"github.com/42wim/matterbridge/gateway/samechannel"
+	"github.com/hashicorp/golang-lru"
 	"github.com/sirupsen/logrus"
 )
 
@@ -20,6 +21,12 @@ type Router struct {
 	Message          chan config.Message
 	MattermostPlugin chan config.Message
 
+	// dedupeCache tracks recently seen (account, channel, username, text)
+	// combinations for protocols without native message IDs (e.g. IRC).
+	// ZNC replays buffered messages after a reconnect, which would otherwise
+	// relay every message twice to all destinations.
+	dedupeCache *lru.Cache
+
 	logger *logrus.Entry
 }
 
@@ -28,12 +35,14 @@ type Router struct {
 func NewRouter(rootLogger *logrus.Logger, cfg config.Config, bridgeMap map[string]bridge.Factory) (*Router, error) {
 	logger := rootLogger.WithFields(logrus.Fields{"prefix": "router"})
 
+	dedupeCache, _ := lru.New(10000)
 	r := &Router{
 		Config:           cfg,
 		BridgeMap:        bridgeMap,
 		Message:          make(chan config.Message),
 		MattermostPlugin: make(chan config.Message),
 		Gateways:         make(map[string]*Gateway),
+		dedupeCache:      dedupeCache,
 		logger:           logger,
 	}
 	sgw := samechannel.New(cfg)
@@ -141,6 +150,17 @@ func (r *Router) handleReceive() {
 			continue
 		}
 
+		// Drop duplicate messages from ID-less protocols (e.g. IRC/ZNC buffer
+		// replay after a reconnect). Messages with a native ID (Discord, ...)
+		// are never deduplicated here.
+		if msg.Text != "" && msg.ID == "" &&
+			(msg.Event == "" || msg.Event == config.EventUserAction) &&
+			r.isDuplicateMessage(&msg) {
+			r.logger.Debugf("dropping duplicate message %q from %s on %s (channel %s)",
+				msg.Text, msg.Username, msg.Account, msg.Channel)
+			continue
+		}
+
 		// Set message protocol based on the account it came from
 		msg.Protocol = r.getBridge(msg.Account).Protocol
 
@@ -175,6 +195,31 @@ func (r *Router) handleReceive() {
 			}
 		}
 	}
+}
+
+// isDuplicateMessage reports whether an identical message (same account,
+// channel, username and text) was seen within the dedupe window. It is
+// used to filter out messages that are delivered twice by bridges without
+// native message IDs, e.g. IRC messages replayed by a ZNC buffer after a
+// reconnect. The window defaults to 5 seconds and can be tuned with
+// [general] DedupeSeconds (0 disables deduplication).
+func (r *Router) isDuplicateMessage(msg *config.Message) bool {
+	window := time.Duration(r.BridgeValues().General.DedupeSeconds) * time.Second
+	if window == 0 {
+		return false
+	}
+
+	key := msg.Account + "\x00" + msg.Channel + "\x00" + msg.Username + "\x00" + msg.Text
+	now := time.Now()
+	if last, ok := r.dedupeCache.Get(key); ok {
+		if now.Sub(last.(time.Time)) < window {
+			// Don't refresh the timestamp on a hit, so a legitimate repeat of
+			// the same text after the window has passed isn't dropped.
+			return true
+		}
+	}
+	r.dedupeCache.Add(key, now)
+	return false
 }
 
 // updateChannelMembers sends every minute an GetChannelMembers event to all bridges.

@@ -99,6 +99,7 @@ type Protocol struct {
 	ColorNicks             bool     // only irc for now
 	Debug                  bool     // general
 	DebugLevel             int      // only for irc now
+	DedupeSeconds          int      // general, dedupe window for messages without native IDs (IRC/ZNC replay), 0 disables (default 5)
 	DirectMessages         bool     // irc
 	DisableWebPagePreview  bool     // telegram
 	EditSuffix             string   // mattermost, slack, discord, telegram, gitter
@@ -287,6 +288,9 @@ func NewConfig(rootLogger *logrus.Logger, cfgfile string) Config {
 	}
 	if mycfg.cv.General.MediaDownloadSize == 0 {
 		mycfg.cv.General.MediaDownloadSize = 1000000
+	}
+	if !viper.IsSet("dedupeseconds") {
+		mycfg.cv.General.DedupeSeconds = 5
 	}
 	viper.WatchConfig()
 	viper.OnConfigChange(func(e fsnotify.Event) {
