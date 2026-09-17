@@ -1,0 +1,15 @@
+[Unit]
+Description=Matterbridge chat bridge
+After=network-online.target znc.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/matterbridge
+ExecStart=/home/ubuntu/matterbridge/matterbridge -conf matterbridge.toml
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

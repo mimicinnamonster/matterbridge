@@ -37,16 +37,27 @@ type Birc struct {
 	channels                                  map[string]bool
 	dmChannels                                map[string]bool
 	nickServRegCache                          map[string]time.Time // account → NickServ registration date (zero = failed lookup)
-	nickServQueried                           map[string]bool      // accounts already queried; prevents re-querying on failure
 	nickServLastChecked                       map[string]time.Time // account → last time the ignore decision was evaluated
 	nickServIgnoreDecision                    map[string]bool      // account → cached ignore decision (true = ignore)
 	nickServCacheMu                           sync.Mutex
-	nickServInfoInFlight                      atomic.Int32                // number of fetchNickServRegistration queries in flight
-	nickServActiveQueries                     map[string]bool             // track accounts with active NickServ queries
-	nickServRetries                           map[string]int              // account → number of NickServ INFO retry attempts
-	pendingMessages                           map[string][]config.Message // messages from accounts awaiting NickServ verification
+	nickServInfoInFlight                      atomic.Int32 // number of fetchNickServRegistration queries in flight
+	nickServActiveQueries                     map[string]bool   // account → a NickServ INFO query is currently in flight
+	nickServRetries                           map[string]int    // account → number of consecutive NickServ INFO failures (0 = never queried / succeeded)
+	pendingMessages                           map[string][]pendingMsg // messages from accounts awaiting NickServ verification
 	pendingMessagesMu                         sync.Mutex
 	*bridge.Config
+}
+
+// pendingMsg is a message held while NickServ registration data is being looked up.
+type pendingMsg struct {
+	Msg      config.Message
+	QueuedAt time.Time
+}
+
+const nickServMaxHold = 15 * time.Second // max time a message is held per account before being dropped
+
+func (b *Birc) nickServRetryDelays() []time.Duration {
+	return []time.Duration{0, 2 * time.Second, 5 * time.Second}
 }
 
 func New(cfg *bridge.Config) bridge.Bridger {
@@ -58,12 +69,11 @@ func New(cfg *bridge.Config) bridge.Bridger {
 	b.channels = make(map[string]bool)
 	b.dmChannels = make(map[string]bool)
 	b.nickServRegCache = make(map[string]time.Time)
-	b.nickServQueried = make(map[string]bool)
 	b.nickServLastChecked = make(map[string]time.Time)
 	b.nickServIgnoreDecision = make(map[string]bool)
 	b.nickServRetries = make(map[string]int)
 	b.nickServActiveQueries = make(map[string]bool)
-	b.pendingMessages = make(map[string][]config.Message)
+	b.pendingMessages = make(map[string][]pendingMsg)
 
 	if b.GetInt("MessageDelay") == 0 {
 		b.MessageDelay = 1300
@@ -511,74 +521,120 @@ func (b *Birc) skipPrivMsg(event girc.Event) bool {
 		}
 		if channelMatches {
 			if account, ok := event.Tags.Get("account"); ok {
-				b.nickServCacheMu.Lock()
-				regDate, cached := b.nickServRegCache[account]
-				lastChecked := b.nickServLastChecked[account]
-				checkedRecently := time.Since(lastChecked) < 24*time.Hour
-				cachedDecision := b.nickServIgnoreDecision[account]
-
-				var shouldIgnore bool
-				if cached {
-					if checkedRecently {
-						// Reuse the cached decision from today
-						shouldIgnore = cachedDecision
-					} else {
-						// Re-evaluate and store the new decision
-						if !regDate.IsZero() {
-							ageDays := time.Since(regDate).Hours() / 24
-							shouldIgnore = ageDays < float64(ignoreDays)
-						}
-						b.nickServLastChecked[account] = time.Now()
-						b.nickServIgnoreDecision[account] = shouldIgnore
-					}
-				} else if !checkedRecently && !b.nickServActiveQueries[account] {
-					// First time seeing this account or not checked in 24 hours
-					// Set lastChecked timestamp (retry count will be read and incremented before fetch)
-					b.nickServLastChecked[account] = time.Now()
-					b.nickServQueried[account] = true
-				}
-				b.nickServCacheMu.Unlock()
-
-				if cached {
-					if shouldIgnore {
-						b.Log.Debugf("Ignoring message from %s (account %s, cached ignore decision)",
-							event.Source.Name, account)
-						return true
-					}
-					// zero regDate = failed lookup, or account is old enough — allow through
-				} else if !checkedRecently && !b.nickServActiveQueries[account] {
-					// First time seeing this account or not checked in 24 hours — fire background NickServ query, HOLD message
-					retryCount := b.nickServRetries[account]
-					var delay time.Duration
-					switch retryCount {
-					case 0:
-						delay = 0
-					case 1:
-						delay = 2 * time.Second
-					case 2:
-						delay = 5 * time.Second
-					default:
-						// Give up after 3 retries, let message through
-						b.Log.Warnf("Giving up NickServ verification for account %s after %d retries, allowing messages through", account, retryCount)
-					}
-					if retryCount < 3 {
-						b.nickServRetries[account]++
-						b.Log.Debugf("Holding message from %s (account %s) pending NickServ verification (retry %d, delay %v)", event.Source.Name, account, retryCount, delay)
-						b.queueMessageForAccount(account, event)
-						go func() {
-							if delay > 0 {
-								time.Sleep(delay)
-							}
-							b.fetchNickServRegistration(account)
-						}()
-						return true
-					}
-				}
+				return b.skipRecentlyRegistered(account, event, ignoreDays)
 			}
 		}
 	}
 
 	return false
+}
+
+// recentlyRegisteredDecision holds the outcome of evaluating an account against
+// the IgnoreRegistered filter.
+type recentlyRegisteredDecision struct {
+	shouldIgnore bool // account is registered less than ignoreDays ago
+	hold         bool // message must be held pending NickServ verification
+	gaveUp       bool // verification failed too many times; messages pass through
+	fire         bool // whether to start the next verification attempt
+	retry        int  // index into nickServRetryDelays when fire is true
+}
+
+// evaluateRecentlyRegistered computes the IgnoreRegistered decision for a message
+// from the given account and updates the NickServ tracking state accordingly.
+// It does not queue messages, fire queries, or send anything, so it can be
+// unit-tested without a girc client.
+func (b *Birc) evaluateRecentlyRegistered(account string, ignoreDays int) recentlyRegisteredDecision {
+	b.nickServCacheMu.Lock()
+	defer b.nickServCacheMu.Unlock()
+
+	regDate, cached := b.nickServRegCache[account]
+	checkedRecently := time.Since(b.nickServLastChecked[account]) < 24*time.Hour
+	activeQuery := b.nickServActiveQueries[account]
+	retries := b.nickServRetries[account]
+	maxRetries := len(b.nickServRetryDelays())
+
+	var d recentlyRegisteredDecision
+
+	switch {
+	case cached && checkedRecently:
+		// Reuse the cached decision from today
+		d.shouldIgnore = b.nickServIgnoreDecision[account]
+	case cached:
+		// Registration date known but the 24h decision window expired —
+		// re-evaluate synchronously from the known date
+		d.shouldIgnore = time.Since(regDate).Hours()/24 < float64(ignoreDays)
+		b.nickServLastChecked[account] = time.Now()
+		b.nickServIgnoreDecision[account] = d.shouldIgnore
+	case activeQuery:
+		// A verification query is in flight — hold until it completes and
+		// flushes the pending messages (don't start another query)
+		d.hold = true
+	case retries >= maxRetries:
+		if checkedRecently {
+			// Gave up on verification after too many failures — allow through
+			// until the 24h window expires, then verify again
+			d.gaveUp = true
+		} else {
+			b.nickServRetries[account] = 1
+			b.nickServLastChecked[account] = time.Now()
+			d.hold = true
+			d.fire = true
+			d.retry = 0
+		}
+	default:
+		// Unknown account (first sight or retrying after a failure) —
+		// hold and fire the next verification attempt
+		d.retry = retries
+		b.nickServRetries[account] = retries + 1
+		if !checkedRecently {
+			b.nickServLastChecked[account] = time.Now()
+		}
+		d.hold = true
+		d.fire = true
+	}
+
+	return d
+}
+
+// skipRecentlyRegistered decides whether a message from a registered account should be
+// ignored (account registered less than ignoreDays ago), held pending NickServ
+// verification, or allowed through.
+func (b *Birc) skipRecentlyRegistered(account string, event girc.Event, ignoreDays int) bool {
+	d := b.evaluateRecentlyRegistered(account, ignoreDays)
+
+	switch {
+	case d.hold:
+		// Queue first so the message is present if the query completes very fast
+		b.queueMessageForAccount(account, event)
+		if d.fire {
+			// Mark the query active synchronously so a burst of messages from
+			// the same account doesn't each fire its own NICKSERV INFO (the flag
+			// used to be set inside the query goroutine, after a window where
+			// concurrent messages all saw activeQuery=false).
+			b.nickServCacheMu.Lock()
+			b.nickServActiveQueries[account] = true
+			b.nickServCacheMu.Unlock()
+			delay := b.nickServRetryDelays()[d.retry]
+			b.Log.Debugf("Holding message from %s (account %s) pending NickServ verification (attempt %d, delay %v)", event.Source.Name, account, d.retry, delay)
+			go func() {
+				if delay > 0 {
+					time.Sleep(delay)
+				}
+				b.fetchNickServRegistration(account)
+			}()
+		} else {
+			b.Log.Debugf("Holding message from %s (account %s) pending NickServ verification", event.Source.Name, account)
+		}
+		return true
+	case d.gaveUp:
+		b.Log.Warnf("Giving up NickServ verification for account %s, allowing messages through for now", account)
+		return false
+	case d.shouldIgnore:
+		b.Log.Debugf("Ignoring message from %s (account %s, registered less than %d days ago)", event.Source.Name, account, ignoreDays)
+		return true
+	default:
+		return false
+	}
 }
 
 // queueMessageForAccount stores a message from an account that is pending NickServ verification
@@ -609,17 +665,22 @@ func (b *Birc) queueMessageForAccount(account string, event girc.Event) {
 		msg.Event = config.EventNoticeIRC
 	}
 
-	b.pendingMessages[account] = append(b.pendingMessages[account], msg)
+	b.pendingMessages[account] = append(b.pendingMessages[account], pendingMsg{
+		Msg:      msg,
+		QueuedAt: time.Now(),
+	})
 	b.Log.Debugf("Queued message from %s (account %s) pending NickServ verification", event.Source.Name, account)
 }
 
-// processPendingMessages processes all queued messages for an account after NickServ verification
+// processPendingMessages flushes all queued messages for an account after NickServ
+// verification completes. Messages held longer than nickServMaxHold are dropped.
 func (b *Birc) processPendingMessages(account string) {
 	b.pendingMessagesMu.Lock()
-	defer b.pendingMessagesMu.Unlock()
+	messages := b.pendingMessages[account]
+	delete(b.pendingMessages, account)
+	b.pendingMessagesMu.Unlock()
 
-	messages, exists := b.pendingMessages[account]
-	if !exists {
+	if len(messages) == 0 {
 		return
 	}
 
@@ -628,14 +689,24 @@ func (b *Birc) processPendingMessages(account string) {
 
 	// Check if this account should be ignored based on registration age
 	shouldIgnore := false
+	b.nickServCacheMu.Lock()
 	if regDate, ok := b.nickServRegCache[account]; ok && !regDate.IsZero() {
 		ageDays := time.Since(regDate).Hours() / 24
 		shouldIgnore = ageDays < float64(ignoreDays)
 	}
+	b.nickServCacheMu.Unlock()
 
-	b.Log.Debugf("Processing %d pending messages for account %s (shouldIgnore=%v)", len(messages), account, shouldIgnore)
+	b.Log.Debugf("Flushing %d pending messages for account %s (shouldIgnore=%v)", len(messages), account, shouldIgnore)
 
-	for _, msg := range messages {
+	for _, pm := range messages {
+		msg := pm.Msg
+
+		// Bounded hold: drop messages that waited too long for verification
+		if time.Since(pm.QueuedAt) > nickServMaxHold {
+			b.Log.Debugf("Dropping held message from %s (account %s), waited longer than %s", msg.Username, account, nickServMaxHold)
+			continue
+		}
+
 		// Check if the message channel is in the ignore list
 		channelMatches := false
 		for _, c := range ignoreRegisteredChannels {
@@ -653,8 +724,6 @@ func (b *Birc) processPendingMessages(account string) {
 			b.Log.Debugf("Ignoring held message from %s (account %s, too recently registered)", msg.Username, account)
 		}
 	}
-	// Clear the pending messages for this account
-	delete(b.pendingMessages, account)
 }
 
 func (b *Birc) nicksPerRow() int {
@@ -704,56 +773,106 @@ func (b *Birc) fetchNickServRegistration(account string) {
 
 	b.i.Cmd.Message(nsName, "INFO "+account) //nolint:errcheck
 
-	var regDate time.Time
-	found := false
+	regDate, found := b.collectNickServLines(nsName)
+	b.finishNickServRegistration(account, regDate, found)
+}
 
-	_, done := b.i.Handlers.AddTmp(girc.NOTICE, 2*time.Second, func(c *girc.Client, e girc.Event) bool {
-		src := ""
-		if e.Source != nil {
-			src = e.Source.Name
+// nickservLine is the parsed classification of a single NICKSERV INFO NOTICE line.
+type nickservLine struct {
+	regDate time.Time
+	found   bool
+	term    bool // terminating line (End of Info / not registered)
+}
+
+// classifyNickServLine parses one raw NICKSERV NOTICE line into its
+// classification. It is pure so it can be unit-tested without a girc client.
+func classifyNickServLine(text string) nickservLine {
+	var line nickservLine
+	// Parse the registration date line (contains "registered" case-insensitively)
+	if strings.Contains(strings.ToLower(text), "registered") {
+		if t, err := parseNickServDate(text); err == nil {
+			line.regDate = t
+			line.found = true
 		}
-		b.Log.Debugf("fetchNickServRegistration AddTmp fired: source=%q params=%v text=%q (want source=%q)", src, e.Params, e.Last(), nsName)
+	}
+	// End-of-INFO markers from Atheme and Anope (strip formatting before comparing)
+	if strings.Contains(text, "*** End of Info ***") ||
+		strings.Contains(text, "isn't registered") ||
+		strings.Contains(text, "is not registered") {
+		line.term = true
+	}
+	return line
+}
+
+// accumulateNickServLines folds a sequence of classified lines into a single
+// result; the first line that carries a registration date wins. Pure.
+func accumulateNickServLines(lines []nickservLine) (regDate time.Time, found bool) {
+	for _, l := range lines {
+		if l.found && !found {
+			found = true
+			regDate = l.regDate
+		}
+	}
+	return regDate, found
+}
+
+// collectNickServLines registers a temporary NOTICE handler and accumulates the
+// NICKSERV INFO reply lines until a terminating line arrives or the deadline
+// elapses. This is the thin girc transport; the line parsing and accumulation
+// are done by the pure classifyNickServLine/accumulateNickServLines so the
+// meaningful logic is testable independently of girc's async handler scheduling.
+func (b *Birc) collectNickServLines(nsName string) (regDate time.Time, found bool) {
+	lines := make(chan nickservLine, 16)
+
+	b.i.Handlers.AddTmp(girc.NOTICE, 2*time.Second, func(c *girc.Client, e girc.Event) bool {
 		if e.Source == nil || !strings.EqualFold(e.Source.Name, nsName) {
 			return false
 		}
-		text := girc.StripRaw(e.Last())
-		// Parse the registration date line (contains "registered" case-insensitively)
-		if !found && strings.Contains(strings.ToLower(text), "registered") {
-			if t, err := parseNickServDate(text); err == nil {
-				regDate = t
-				found = true
-			} else {
-				b.Log.Debugf("fetchNickServRegistration: failed to parse date from %q: %v", text, err)
-			}
+		line := classifyNickServLine(girc.StripRaw(e.Last()))
+		// Non-blocking send: never let the handler goroutine block, even if we've
+		// already stopped reading (e.g. after the timeout below).
+		select {
+		case lines <- line:
+		default:
 		}
-		// End-of-INFO markers from Atheme and Anope (strip formatting before comparing)
-		if strings.Contains(text, "*** End of Info ***") ||
-			strings.Contains(text, "isn't registered") ||
-			strings.Contains(text, "is not registered") {
-			return true // remove handler
-		}
-		return false
+		return line.term
 	})
 
-	<-done
+	acc := make([]nickservLine, 0, 16)
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case line := <-lines:
+			acc = append(acc, line)
+			if line.term {
+				return accumulateNickServLines(acc)
+			}
+		case <-deadline:
+			return accumulateNickServLines(acc)
+		}
+	}
+}
 
+// finishNickServRegistration applies the outcome of a NickServ lookup to the
+// cache/decision state and flushes any pending messages for the account.
+func (b *Birc) finishNickServRegistration(account string, regDate time.Time, found bool) {
 	b.nickServCacheMu.Lock()
 	if found {
 		b.nickServRegCache[account] = regDate
 		b.nickServLastChecked[account] = time.Now()
-		b.nickServRetries[account] = 0 // Clear retry counter on success
+		delete(b.nickServRetries, account) // Clear retry counter on success
 		// Set the ignore decision based on account age
 		ignoreDays := b.GetInt("IgnoreRegisteredDays")
 		ageDays := time.Since(regDate).Hours() / 24
 		b.nickServIgnoreDecision[account] = ageDays < float64(ignoreDays)
 		b.Log.Debugf("NickServ: account %s registered on %s (ignore decision: %v)", account, regDate.Format(time.RFC3339), b.nickServIgnoreDecision[account])
 	} else {
-		b.Log.Warnf("Could not fetch NickServ registration date for account %s (query failed or timed out, retry %d)", account, b.nickServRetries[account])
+		b.Log.Warnf("Could not fetch NickServ registration date for account %s (query failed or timed out, attempt %d)", account, b.nickServRetries[account])
 	}
+	b.nickServCacheMu.Unlock()
 
 	// Process any pending messages for this account
 	b.processPendingMessages(account)
-	b.nickServCacheMu.Unlock()
 }
 
 // parseNickServDate extracts and parses the registration date from a NickServ INFO NOTICE line.
