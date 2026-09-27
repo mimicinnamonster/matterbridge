@@ -489,41 +489,59 @@ func (b *Birc) skipPrivMsg(event girc.Event) bool {
 		}
 	}
 
-	ignoreChannels := b.GetStringSlice("IgnoreUnregistered")
-	shouldIgnore := false
-	for _, c := range ignoreChannels {
-		if c == "*" || strings.EqualFold(c, event.Params[0]) {
-			shouldIgnore = true
-			break
-		}
-	}
+	return b.skipByAccountTag(event, b.i.HasCapability("account-tag"))
+}
 
-	if shouldIgnore {
-		if b.i.HasCapability("account-tag") {
-			_, ok := event.Tags.Get("account")
-			if !ok {
+// accountFromTag returns the services account name carried by an IRCv3
+// account tag, and whether the sender is actually registered with services.
+// Per the IRCv3 account-tag spec, users who are NOT logged in to services
+// still carry the tag, with the value "*", so the presence of the tag alone
+// does not prove registration. The second return value is false when the
+// tag is absent, empty, or "*".
+func accountFromTag(tags girc.Tags) (account string, registered bool) {
+	account, ok := tags.Get("account")
+	if !ok || account == "" || account == "*" {
+		return "", false
+	}
+	return account, true
+}
+
+// skipByAccountTag applies the account-tag based filters (IgnoreUnregistered
+// and IgnoreRegistered) to a PRIVMSG. hasAccountTag reports whether the
+// account-tag capability is enabled; it is passed in so the decision can be
+// unit-tested without a girc client (girc.Client.HasCapability reports false
+// while disconnected). It returns true when the message must be skipped.
+func (b *Birc) skipByAccountTag(event girc.Event, hasAccountTag bool) bool {
+	// IgnoreUnregistered: ignore messages from users not logged in to services
+	for _, c := range b.GetStringSlice("IgnoreUnregistered") {
+		if c != "*" && !strings.EqualFold(c, event.Params[0]) {
+			continue
+		}
+		if hasAccountTag {
+			if _, registered := accountFromTag(event.Tags); !registered {
 				b.Log.Debugf("Ignoring message from %s in %s (unregistered).", event.Source.Name, event.Params[0])
 				return true
 			}
 		}
+		break
 	}
 
-	// IgnoreRegistered: ignore messages from recently registered accounts
+	// IgnoreRegistered: ignore messages from recently registered accounts.
+	// Recency only applies to named accounts; an unregistered sender (no
+	// tag, "*" or empty) passes through here and is left to IgnoreUnregistered.
 	ignoreRegisteredChannels := b.GetStringSlice("IgnoreRegistered")
 	ignoreDays := b.GetInt("IgnoreRegisteredDays")
-	if len(ignoreRegisteredChannels) > 0 && ignoreDays > 0 && b.i.HasCapability("account-tag") {
-		channelMatches := false
-		for _, c := range ignoreRegisteredChannels {
-			if c == "*" || strings.EqualFold(c, event.Params[0]) {
-				channelMatches = true
-				break
-			}
+	if len(ignoreRegisteredChannels) == 0 || ignoreDays <= 0 || !hasAccountTag {
+		return false
+	}
+	for _, c := range ignoreRegisteredChannels {
+		if c != "*" && !strings.EqualFold(c, event.Params[0]) {
+			continue
 		}
-		if channelMatches {
-			if account, ok := event.Tags.Get("account"); ok {
-				return b.skipRecentlyRegistered(account, event, ignoreDays)
-			}
+		if account, registered := accountFromTag(event.Tags); registered {
+			return b.skipRecentlyRegistered(account, event, ignoreDays)
 		}
+		break
 	}
 
 	return false
