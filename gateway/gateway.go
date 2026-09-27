@@ -183,14 +183,16 @@ func (gw *Gateway) mapChannelConfig(cfg []config.Bridge, direction string) {
 		ID := br.Channel + br.Account
 		if _, ok := gw.Channels[ID]; !ok {
 			channel := &config.ChannelInfo{
-				Name:        br.Channel,
-				Direction:   direction,
-				ID:          ID,
-				Options:     br.Options,
-				Account:     br.Account,
-				SameChannel: make(map[string]bool),
+				Name:           br.Channel,
+				Direction:      direction,
+				ID:             ID,
+				Options:        br.Options,
+				Account:        br.Account,
+				SameChannel:    make(map[string]bool),
+				IgnoreMentions: make(map[string]bool),
 			}
 			channel.SameChannel[gw.Name] = br.SameChannel
+			channel.IgnoreMentions[gw.Name] = br.IgnoreMentions
 			gw.Channels[channel.ID] = channel
 		} else {
 			// if we already have a key and it's not our current direction it means we have a bidirectional inout
@@ -199,6 +201,7 @@ func (gw *Gateway) mapChannelConfig(cfg []config.Bridge, direction string) {
 			}
 		}
 		gw.Channels[ID].SameChannel[gw.Name] = br.SameChannel
+		gw.Channels[ID].IgnoreMentions[gw.Name] = br.IgnoreMentions
 	}
 }
 
@@ -322,7 +325,18 @@ func (gw *Gateway) ignoreMessage(msg *config.Message) bool {
 
 	igNicks := strings.Fields(gw.Bridges[msg.Account].GetString("IgnoreNicks"))
 	igMessages := strings.Fields(gw.Bridges[msg.Account].GetString("IgnoreMessages"))
-	if gw.ignoreTextEmpty(msg) || gw.ignoreText(msg.Username, igNicks) || gw.ignoreText(msg.Text, igMessages) || gw.ignoreFilesComment(msg.Extra, igMessages) {
+
+	mentionIgnored := false
+	if ch, ok := gw.Channels[getChannelID(msg)]; ok {
+		for _, v := range ch.IgnoreMentions {
+			if v {
+				mentionIgnored = true
+				break
+			}
+		}
+	}
+
+	if gw.ignoreTextEmpty(msg) || gw.ignoreText(msg.Username, igNicks) || (mentionIgnored && ignoreTextMentionsNick(msg.Text, igNicks)) || gw.ignoreText(msg.Text, igMessages) || gw.ignoreFilesComment(msg.Extra, igMessages) {
 		return true
 	}
 
@@ -581,6 +595,56 @@ func (gw *Gateway) ignoreText(text string, input []string) bool {
 		}
 	}
 	return false
+}
+
+// ignoreTextMentionsNick returns true if text contains any of the given nicks
+// as a whole-word match (case-insensitive). Nick patterns are treated as
+// literal strings (not regex).
+//
+// Word boundaries are determined by custom logic rather than \b, because
+// nicks may contain non-word characters (e.g. "c++") where \b would fail.
+func ignoreTextMentionsNick(text string, nicks []string) bool {
+	if text == "" {
+		return false
+	}
+	lower := strings.ToLower(text)
+	for _, nick := range nicks {
+		if nick == "" {
+			continue
+		}
+		needle := strings.ToLower(nick)
+		idx := 0
+		for idx < len(lower) {
+			pos := strings.Index(lower[idx:], needle)
+			if pos < 0 {
+				break
+			}
+			absPos := idx + pos
+			if isMentionBoundary(lower, absPos, len(needle)) {
+				return true
+			}
+			idx = absPos + 1
+		}
+	}
+	return false
+}
+
+// isMentionBoundary checks that the match at pos with the given length
+// is a whole-word match: the character before (if any) and after (if any)
+// the match must not be a word character (letter, digit, or underscore).
+func isMentionBoundary(text string, pos, length int) bool {
+	if pos > 0 && isWordChar(text[pos-1]) {
+		return false
+	}
+	end := pos + length
+	if end < len(text) && isWordChar(text[end]) {
+		return false
+	}
+	return true
+}
+
+func isWordChar(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
 }
 
 func getProtocol(msg *config.Message) string {

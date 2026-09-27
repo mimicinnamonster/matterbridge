@@ -71,12 +71,13 @@ type FileInfo struct {
 }
 
 type ChannelInfo struct {
-	Name        string
-	Account     string
-	Direction   string
-	ID          string
-	SameChannel map[string]bool
-	Options     ChannelOptions
+	Name           string
+	Account        string
+	Direction      string
+	ID             string
+	SameChannel    map[string]bool
+	IgnoreMentions map[string]bool
+	Options        ChannelOptions
 }
 
 type ChannelMember struct {
@@ -194,10 +195,11 @@ type ChannelOptions struct {
 }
 
 type Bridge struct {
-	Account     string
-	Channel     string
-	Options     ChannelOptions
-	SameChannel bool
+	Account        string
+	Channel        string
+	Options        ChannelOptions
+	SameChannel    bool
+	IgnoreMentions bool
 }
 
 type Gateway struct {

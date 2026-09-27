@@ -220,6 +220,7 @@ func TestNewRouter(t *testing.T) {
 		ID:          "42wim/testroomgitter.42wim",
 		Account:     "gitter.42wim",
 		SameChannel: map[string]bool{"bridge2": false},
+		IgnoreMentions: map[string]bool{"bridge2": false},
 	}, r.Gateways["bridge2"].Channels["42wim/testroomgitter.42wim"])
 	assert.Equal(t, &config.ChannelInfo{
 		Name:        "42wim/testroom",
@@ -227,6 +228,7 @@ func TestNewRouter(t *testing.T) {
 		ID:          "42wim/testroomgitter.42wim",
 		Account:     "gitter.42wim",
 		SameChannel: map[string]bool{"bridge1": false},
+		IgnoreMentions: map[string]bool{"bridge1": false},
 	}, r.Gateways["bridge1"].Channels["42wim/testroomgitter.42wim"])
 	assert.Equal(t, &config.ChannelInfo{
 		Name:        "general",
@@ -234,6 +236,7 @@ func TestNewRouter(t *testing.T) {
 		ID:          "generaldiscord.test",
 		Account:     "discord.test",
 		SameChannel: map[string]bool{"bridge1": false},
+		IgnoreMentions: map[string]bool{"bridge1": false},
 	}, r.Gateways["bridge1"].Channels["generaldiscord.test"])
 }
 
@@ -249,6 +252,7 @@ func TestGetDestChannel(t *testing.T) {
 				Direction:   "inout",
 				ID:          "generaldiscord.test",
 				SameChannel: map[string]bool{"bridge1": false},
+				IgnoreMentions: map[string]bool{"bridge1": false},
 				Options:     config.ChannelOptions{Key: ""},
 			}}, r.Gateways["bridge1"].getDestChannel(msg, *br))
 		case "slack.test":
@@ -258,6 +262,7 @@ func TestGetDestChannel(t *testing.T) {
 				Direction:   "out",
 				ID:          "testingslack.test",
 				SameChannel: map[string]bool{"bridge1": false},
+				IgnoreMentions: map[string]bool{"bridge1": false},
 				Options:     config.ChannelOptions{Key: ""},
 			}}, r.Gateways["bridge1"].getDestChannel(msg, *br))
 		case "gitter.42wim":
@@ -281,6 +286,7 @@ func TestGetDestChannelWildcardDynamic(t *testing.T) {
 		Direction:   "inout",
 		ID:          "#uxnirc.test",
 		SameChannel: map[string]bool{},
+		IgnoreMentions: map[string]bool{},
 		Options:     config.ChannelOptions{},
 	}
 	gw.Channels["_uxndiscord.test"] = &config.ChannelInfo{
@@ -289,6 +295,7 @@ func TestGetDestChannelWildcardDynamic(t *testing.T) {
 		Direction:   "inout",
 		ID:          "_uxndiscord.test",
 		SameChannel: map[string]bool{},
+		IgnoreMentions: map[string]bool{},
 		Options:     config.ChannelOptions{},
 	}
 
@@ -351,6 +358,7 @@ func TestGetDestChannelAdvanced(t *testing.T) {
 								Direction:   "inout",
 								ID:          "#mainirc.zzz",
 								SameChannel: map[string]bool{"bridge": false},
+								IgnoreMentions: map[string]bool{"bridge": false},
 								Options:     config.ChannelOptions{Key: ""},
 							}}, channels)
 						case tgTestAccount:
@@ -360,6 +368,7 @@ func TestGetDestChannelAdvanced(t *testing.T) {
 								Direction:   "inout",
 								ID:          "-1111111111111telegram.zzz",
 								SameChannel: map[string]bool{"bridge": false},
+								IgnoreMentions: map[string]bool{"bridge": false},
 								Options:     config.ChannelOptions{Key: ""},
 							}}, channels)
 						case slackTestAccount:
@@ -369,6 +378,7 @@ func TestGetDestChannelAdvanced(t *testing.T) {
 								Direction:   "inout",
 								ID:          "ircslack.zzz",
 								SameChannel: map[string]bool{"bridge": false},
+								IgnoreMentions: map[string]bool{"bridge": false},
 								Options:     config.ChannelOptions{Key: ""},
 							}}, channels)
 						}
@@ -385,6 +395,7 @@ func TestGetDestChannelAdvanced(t *testing.T) {
 								Direction:   "inout",
 								ID:          "#main-helpirc.zzz",
 								SameChannel: map[string]bool{"bridge2": false},
+								IgnoreMentions: map[string]bool{"bridge2": false},
 								Options:     config.ChannelOptions{Key: ""},
 							}}, channels)
 						case tgTestAccount:
@@ -394,6 +405,7 @@ func TestGetDestChannelAdvanced(t *testing.T) {
 								Direction:   "inout",
 								ID:          "--444444444444telegram.zzz",
 								SameChannel: map[string]bool{"bridge2": false},
+								IgnoreMentions: map[string]bool{"bridge2": false},
 								Options:     config.ChannelOptions{Key: ""},
 							}}, channels)
 						}
@@ -410,6 +422,7 @@ func TestGetDestChannelAdvanced(t *testing.T) {
 								Direction:   "inout",
 								ID:          "#main-telegramirc.zzz",
 								SameChannel: map[string]bool{"bridge3": false},
+								IgnoreMentions: map[string]bool{"bridge3": false},
 								Options:     config.ChannelOptions{Key: ""},
 							}}, channels)
 						case tgTestAccount:
@@ -419,6 +432,7 @@ func TestGetDestChannelAdvanced(t *testing.T) {
 								Direction:   "inout",
 								ID:          "--333333333333telegram.zzz",
 								SameChannel: map[string]bool{"bridge3": false},
+								IgnoreMentions: map[string]bool{"bridge3": false},
 								Options:     config.ChannelOptions{Key: ""},
 							}}, channels)
 						}
@@ -438,6 +452,7 @@ func TestGetDestChannelAdvanced(t *testing.T) {
 							Direction:   "out",
 							ID:          "#mainirc.zzz",
 							SameChannel: map[string]bool{"announcements": false},
+							IgnoreMentions: map[string]bool{"announcements": false},
 							Options:     config.ChannelOptions{Key: ""},
 						})
 						assert.Contains(t, channels, config.ChannelInfo{
@@ -446,6 +461,7 @@ func TestGetDestChannelAdvanced(t *testing.T) {
 							Direction:   "out",
 							ID:          "#main-helpirc.zzz",
 							SameChannel: map[string]bool{"announcements": false},
+							IgnoreMentions: map[string]bool{"announcements": false},
 							Options:     config.ChannelOptions{Key: ""},
 						})
 					case slackTestAccount:
@@ -455,6 +471,7 @@ func TestGetDestChannelAdvanced(t *testing.T) {
 							Direction:   "out",
 							ID:          "generalslack.zzz",
 							SameChannel: map[string]bool{"announcements": false},
+							IgnoreMentions: map[string]bool{"announcements": false},
 							Options:     config.ChannelOptions{Key: ""},
 						}}, channels)
 					case tgTestAccount:
@@ -464,6 +481,7 @@ func TestGetDestChannelAdvanced(t *testing.T) {
 							Direction:   "out",
 							ID:          "--333333333333telegram.zzz",
 							SameChannel: map[string]bool{"announcements": false},
+							IgnoreMentions: map[string]bool{"announcements": false},
 							Options:     config.ChannelOptions{Key: ""},
 						}}, channels)
 					}
@@ -598,6 +616,173 @@ func (s *ignoreTestSuite) TestIgnoreNicks() {
 		output := s.gw.ignoreText(testcase.input, testcase.re)
 		s.Assert().Equalf(testcase.output, output, "case '%s' failed", testname)
 	}
+}
+
+func TestIgnoreTextMentionsNick(t *testing.T) {
+	tests := map[string]struct {
+		text   string
+		nicks  []string
+		expect bool
+	}{
+		"empty text": {
+			text:   "",
+			nicks:  []string{"bob"},
+			expect: false,
+		},
+		"empty nicks": {
+			text:   "hello bob",
+			nicks:  []string{},
+			expect: false,
+		},
+		"exact match": {
+			text:   "hello bob",
+			nicks:  []string{"bob"},
+			expect: true,
+		},
+		"case insensitive": {
+			text:   "Hello Bob",
+			nicks:  []string{"bob"},
+			expect: true,
+		},
+		"partial match rejected": {
+			text:   "robust",
+			nicks:  []string{"rob"},
+			expect: false,
+		},
+		"partial match rejected reverse": {
+			text:   "bob's house",
+			nicks:  []string{"bo"},
+			expect: false,
+		},
+		"multiple nicks one matches": {
+			text:   "hello alice",
+			nicks:  []string{"bob", "alice"},
+			expect: true,
+		},
+		"multiple nicks none match": {
+			text:   "hello world",
+			nicks:  []string{"bob", "alice"},
+			expect: false,
+		},
+		"special regex chars in nick": {
+			text:   "hey c++ guy",
+			nicks:  []string{"c++"},
+			expect: true,
+		},
+		"plus not word char so no false partial": {
+			text:   "c++foo",
+			nicks:  []string{"c++"},
+			expect: false,
+		},
+		"dot in nick matches literal dot": {
+			text:   "user.name said hi",
+			nicks:  []string{"user.name"},
+			expect: true,
+		},
+		"dot in nick does not match wildcard": {
+			text:   "username said hi",
+			nicks:  []string{"user.name"},
+			expect: false,
+		},
+		"empty nick in list skipped": {
+			text:   "hello bob",
+			nicks:  []string{"", "bob"},
+			expect: true,
+		},
+		"nick at start of text": {
+			text:   "bob is here",
+			nicks:  []string{"bob"},
+			expect: true,
+		},
+		"nick at end of text": {
+			text:   "hello bob",
+			nicks:  []string{"bob"},
+			expect: true,
+		},
+		"nick surrounded by punctuation": {
+			text:   "hey, bob!",
+			nicks:  []string{"bob"},
+			expect: true,
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := ignoreTextMentionsNick(tc.text, tc.nicks)
+			assert.Equalf(t, tc.expect, got, "text=%q nicks=%v", tc.text, tc.nicks)
+		})
+	}
+}
+
+func TestIgnoreMessageMentionFiltering(t *testing.T) {
+	testCfg := []byte(`
+[irc.freenode]
+server=""
+
+[discord.test]
+server=""
+
+[[gateway]]
+    name = "gw1"
+    enable=true
+
+    [[gateway.inout]]
+    account = "irc.freenode"
+    channel = "#ch1"
+    IgnoreMentions = true
+
+    [[gateway.inout]]
+    account = "discord.test"
+    channel = "#ch2"
+    IgnoreMentions = false
+`)
+	r := maketestRouter(testCfg)
+	gw := r.Gateways["gw1"]
+
+	// Set IgnoreNicks on the irc bridge config
+	// We need to set it via the Viper config, so let's use the bridge's Config
+	ircBr := gw.Bridges["irc.freenode"]
+	ircBr.Config.Viper().Set("irc.freenode.IgnoreNicks", "bob")
+
+	msgMatch := &config.Message{
+		Text:     "hello bob",
+		Username: "alice",
+		Account:  "irc.freenode",
+		Channel:  "#ch1",
+		Gateway:  "gw1",
+	}
+
+	// #ch1 has IgnoreMentions=true, so mention of "bob" should be filtered
+	assert.True(t, gw.ignoreMessage(msgMatch))
+
+	// Same message on #ch2 which has IgnoreMentions=false should NOT be filtered
+	msgMatch2 := &config.Message{
+		Text:     "hello bob",
+		Username: "alice",
+		Account:  "irc.freenode",
+		Channel:  "#ch2",
+		Gateway:  "gw1",
+	}
+	assert.False(t, gw.ignoreMessage(msgMatch2))
+
+	// Non-matching mention should not be filtered even with IgnoreMentions=true
+	msgNoMatch := &config.Message{
+		Text:     "hello alice",
+		Username: "alice",
+		Account:  "irc.freenode",
+		Channel:  "#ch1",
+		Gateway:  "gw1",
+	}
+	assert.False(t, gw.ignoreMessage(msgNoMatch))
+
+	// Username match should still work regardless of IgnoreMentions
+	msgUserMatch := &config.Message{
+		Text:     "hello world",
+		Username: "bob",
+		Account:  "irc.freenode",
+		Channel:  "#ch1",
+		Gateway:  "gw1",
+	}
+	assert.True(t, gw.ignoreMessage(msgUserMatch))
 }
 
 func BenchmarkTengo(b *testing.B) {
